@@ -193,7 +193,7 @@ Contributions welcome! Please open an issue or PR on GitHub.
 
 ## 📄 License
 
-MIT © [Shivraj Aryan](mailto:greatshivraj@gmail.com)
+MIT © rynshv
 
 ## 🔗 Links
 
