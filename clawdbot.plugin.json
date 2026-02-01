@@ -1,0 +1,72 @@
+{
+  "id": "smart-context",
+  "kind": "hook",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "topK": {
+        "type": "integer",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 50
+      },
+      "recentN": {
+        "type": "integer",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 10
+      },
+      "minScore": {
+        "type": "number",
+        "default": 0.65,
+        "minimum": 0,
+        "maximum": 1
+      },
+      "stripOldToolCalls": {
+        "type": "boolean",
+        "default": true
+      },
+      "cachePath": {
+        "type": "string",
+        "default": "~/.clawdbot/smart-context-cache.db"
+      },
+      "debug": {
+        "type": "boolean",
+        "default": false
+      }
+    }
+  },
+  "uiHints": {
+    "topK": {
+      "label": "Top K Messages",
+      "help": "Number of most relevant messages to keep based on semantic similarity"
+    },
+    "recentN": {
+      "label": "Recent Messages",
+      "help": "Always keep the last N messages for continuity"
+    },
+    "minScore": {
+      "label": "Minimum Similarity Score",
+      "help": "Minimum cosine similarity score (0-1) to include a message"
+    },
+    "stripOldToolCalls": {
+      "label": "Strip Old Tool Calls",
+      "help": "Remove old tool calls to avoid provider format issues"
+    },
+    "cachePath": {
+      "label": "Cache Database Path",
+      "help": "SQLite database path for embedding cache",
+      "advanced": true
+    },
+    "debug": {
+      "label": "Debug Logging",
+      "help": "Enable detailed debug logging for troubleshooting",
+      "advanced": true
+    }
+  }
+}

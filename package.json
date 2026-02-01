@@ -1,0 +1,93 @@
+{
+  "name": "clawdbot-smart-context",
+  "version": "2.0.0",
+  "description": "Semantic context selection for Clawdbot - filters message history by relevance (Transformers.js + WebGPU)",
+  "keywords": [
+    "clawdbot",
+    "context",
+    "semantic-search",
+    "embeddings",
+    "transformers",
+    "ai-agent",
+    "llm",
+    "memory"
+  ],
+  "main": "index.js",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shivammehta007/clawdbot-smart-context.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shivammehta007/clawdbot-smart-context/issues"
+  },
+  "homepage": "https://github.com/shivammehta007/clawdbot-smart-context#readme",
+  "clawdbot": {
+    "id": "smart-context",
+    "name": "Smart Context",
+    "kind": "hook",
+    "description": "Filters message history by semantic relevance before LLM calls",
+    "version": "2.0.0",
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable smart context filtering"
+        },
+        "topK": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Number of most relevant messages to keep"
+        },
+        "recentN": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Always keep the last N messages for continuity"
+        },
+        "minScore": {
+          "type": "number",
+          "default": 0.65,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum similarity score to include a message"
+        },
+        "stripOldToolCalls": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove old tool calls to avoid provider format issues (default: false for safety)"
+        },
+        "cachePath": {
+          "type": "string",
+          "description": "SQLite database path for embedding cache"
+        },
+        "debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug logging"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^11.0.0"
+  },
+  "optionalDependencies": {
+    "node-llama-cpp": "^3.15.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": {
+    "name": "Shivraj Aryan",
+    "email": "greatshivraj@gmail.com"
+  },
+  "license": "MIT"
+}

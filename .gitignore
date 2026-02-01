@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+*.tgz
+dist/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Cache
+cache/
+*.db
+*.db-shm
+*.db-wal
+
+# Development
+*.backup*
+*.bak
+*.old
+.env
+.env.local
+
+# Test files
+test/
+coverage/

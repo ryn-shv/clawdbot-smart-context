@@ -1,0 +1,59 @@
+# Exclude all markdown files except public-facing ones
+*.md
+!README.md
+!PLUGIN_DISTRIBUTION_GUIDE.md
+!LICENSE.md
+
+# Development files
+__tests__/
+*.sh
+test-*.js
+verify-*.js
+backups/
+*.backup
+*.bak
+
+# Phase documentation (internal)
+PHASE*.md
+IMPLEMENTATION_STATUS.md
+MIGRATION_COMPLETE.md
+EMBEDDER_*.md
+TOOL_RESULTS_ARCHITECTURE.md
+AUDIT-REPORT-*.md
+CONFIG_FIX_REPORT.md
+FIX-SUMMARY.md
+LOGGING_ARCHITECTURE.md
+CURRENT_TASK.md
+DIAGNOSIS.md
+STATUS.md
+VERIFICATION.md
+BUGFIX-*.md
+COMPLETION_CHECKLIST.md
+INTEGRATION_GUIDE.md
+NEURAL_SETUP.md
+PACKAGING-PLAN.md
+PRODUCTION_STATUS_*.md
+TRANSFORMERS_MIGRATION_README.md
+
+# Git files
+.git/
+.gitignore
+
+# Development artifacts
+*.backup-*
+*.backup
+*.current-backup
+*.enhanced
+*_final.js
+*_v3.js
+*.accuracy-backup.js
+*.phase*-backup
+*.phase*-only
+*.pre-phase*-backup
+config.js.new
+config.js.phase*
+multiquery-insert.txt
+test-kind.cjs
+memory-selector-patch.js
+patch-*.js
+selector-thread-patch.js
