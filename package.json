@@ -16,12 +16,12 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shivammehta007/clawdbot-smart-context.git"
+    "url": "git+https://github.com/ryn-shv/clawdbot-smart-context.git"
   },
   "bugs": {
-    "url": "https://github.com/shivammehta007/clawdbot-smart-context/issues"
+    "url": "https://github.com/ryn-shv/clawdbot-smart-context/issues"
   },
-  "homepage": "https://github.com/shivammehta007/clawdbot-smart-context#readme",
+  "homepage": "https://github.com/ryn-shv/clawdbot-smart-context#readme",
   "clawdbot": {
     "id": "smart-context",
     "name": "Smart Context",
