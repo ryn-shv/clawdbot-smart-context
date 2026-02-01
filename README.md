@@ -197,9 +197,9 @@ MIT © rynshv
 
 ## 🔗 Links
 
-- [GitHub Repository](https://github.com/shivammehta007/clawdbot-smart-context)
+- [GitHub Repository](https://github.com/ryn-shv/clawdbot-smart-context)
 - [npm Package](https://www.npmjs.com/package/clawdbot-smart-context)
-- [Issue Tracker](https://github.com/shivammehta007/clawdbot-smart-context/issues)
+- [Issue Tracker](https://github.com/ryn-shv/clawdbot-smart-context/issues)
 - [Clawdbot Docs](https://docs.clawd.bot)
 
 ---
