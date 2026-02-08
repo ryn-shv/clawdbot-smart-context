@@ -121,9 +121,13 @@ function shouldTriggerExtraction(state, config) {
   }
   
   // Check time-based trigger (if buffer has messages and enough time passed)
-  if (state.messageBuffer.length > 0 && state.lastExtraction > 0) {
-    const timeSinceLastExtraction = Date.now() - state.lastExtraction;
-    if (timeSinceLastExtraction >= minInterval) {
+  // Works for first extraction too (lastExtraction = 0 means use buffer start time)
+  if (state.messageBuffer.length > 0) {
+    const timeReference = state.lastExtraction > 0 
+      ? state.lastExtraction 
+      : state.messageBuffer[0].timestamp || Date.now();
+    const timeSince = Date.now() - timeReference;
+    if (timeSince >= minInterval) {
       return true;
     }
   }
@@ -162,7 +166,23 @@ async function extractFactsWithLLM(messages, llmCall, options = {}) {
       maxTokens: 1000
     });
     
+    // DEBUG: Log raw LLM response
+    if (debug) {
+      logger.debug('Raw LLM extraction response', {
+        responsePreview: response?.slice(0, 200),
+        responseLength: response?.length
+      });
+    }
+    
     const facts = parseExtractionResponse(response);
+    
+    // DEBUG: Log parsed facts
+    if (debug) {
+      logger.debug('Parsed extraction result', {
+        factsCount: facts.length,
+        factsPreview: facts.map(f => f.fact?.slice(0, 50))
+      });
+    }
     
     if (debug) {
       logger.debug('LLM extraction complete', {

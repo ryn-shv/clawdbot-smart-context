@@ -64,7 +64,7 @@ export const EXTRACTION_SCHEMA = {
 /**
  * System prompt for fact extraction
  */
-export const EXTRACTION_SYSTEM_PROMPT = `You are a fact extraction assistant. Extract important, reusable facts from conversations.
+export const EXTRACTION_SYSTEM_PROMPT = `You are a fact extraction assistant. Extract important facts from conversations that would help future interactions.
 
 CATEGORIES:
 - preference: User likes/dislikes, habits, preferences
@@ -72,30 +72,30 @@ CATEGORIES:
 - project: Project context, architecture, codebase info
 - system: System setup, environment, tools used
 - error_pattern: Recurring errors or troubleshooting patterns
-- personal: Personal info (name, role, location, etc.)
+- personal: Personal info (name, role, location, work schedule, etc.)
 - workflow: User's typical workflows or processes
 
 RULES:
-1. Extract ONLY facts that are:
-   - Permanent or long-lasting (not temporary states)
-   - Specific and actionable (not vague statements)
-   - Relevant for future conversations
+1. Extract facts that are:
+   - Useful for future conversations
+   - Personal attributes, preferences, or context
+   - Work patterns, schedule, responsibilities
+   - Project info, tools, technical preferences
    
 2. DO NOT extract:
    - Tool calls or system messages
-   - Error messages themselves (extract patterns only)
-   - Temporary states ("I'm debugging now")
-   - Opinions about current task
+   - Temporary debugging states
+   - Generic conversation filler
    
 3. Confidence scoring:
-   - 0.9-1.0: Explicitly stated by user ("I prefer X", "My name is Y")
+   - 0.9-1.0: Explicitly stated by user ("I prefer X", "My name is Y", "I work at Z")
    - 0.7-0.9: Strongly implied from context
-   - 0.5-0.7: Inferred from behavior patterns
+   - 0.5-0.7: Reasonable inference from stated facts
    - <0.5: DO NOT extract (too uncertain)
 
-4. Keep facts concise and clear (max 200 chars)
+4. Keep facts concise (max 200 chars)
 
-OUTPUT: JSON array of extracted facts. Return empty array [] if nothing to extract.`;
+OUTPUT: JSON array of extracted facts. Extract ANY relevant personal/professional info, not just "permanent" facts. Return [] if truly nothing to extract.`;
 
 /**
  * Generate extraction prompt for a conversation batch
@@ -196,18 +196,42 @@ Do these facts conflict? Return JSON with conflicts, reason, and resolution.`;
  * @returns {boolean} True if valid
  */
 export function validateExtractedFact(fact) {
-  if (!fact || typeof fact !== 'object') return false;
+  if (!fact || typeof fact !== 'object') {
+    console.log('[extractor] Validation failed: not an object', fact);
+    return false;
+  }
   
-  if (typeof fact.fact !== 'string' || fact.fact.length === 0) return false;
-  if (fact.fact.length > 200) return false;
+  if (typeof fact.fact !== 'string' || fact.fact.length === 0) {
+    console.log('[extractor] Validation failed: fact not string or empty', fact.fact);
+    return false;
+  }
+  if (fact.fact.length > 200) {
+    console.log('[extractor] Validation failed: fact too long', fact.fact.length);
+    return false;
+  }
   
-  if (!Object.values(FACT_CATEGORIES).includes(fact.category)) return false;
+  if (!Object.values(FACT_CATEGORIES).includes(fact.category)) {
+    console.log('[extractor] Validation failed: invalid category', fact.category, 'valid:', Object.values(FACT_CATEGORIES));
+    return false;
+  }
   
-  if (typeof fact.confidence !== 'number') return false;
-  if (fact.confidence < 0 || fact.confidence > 1) return false;
+  if (typeof fact.confidence !== 'number') {
+    console.log('[extractor] Validation failed: confidence not number', fact.confidence);
+    return false;
+  }
+  if (fact.confidence < 0 || fact.confidence > 1) {
+    console.log('[extractor] Validation failed: confidence out of range', fact.confidence);
+    return false;
+  }
   
+  // source_context is optional - add default if missing
+  if (!fact.source_context) {
+    fact.source_context = 'Extracted from conversation';
+  }
   if (typeof fact.source_context !== 'string') return false;
-  if (fact.source_context.length > 100) return false;
+  if (fact.source_context.length > 100) {
+    fact.source_context = fact.source_context.slice(0, 97) + '...';
+  }
   
   return true;
 }
@@ -220,21 +244,20 @@ export function validateExtractedFact(fact) {
  */
 export function parseExtractionResponse(response) {
   try {
-    // Try to extract JSON from response (handle markdown code blocks)
+    // Extract JSON from markdown code blocks or plain text
     let jsonText = response.trim();
     
-    // Remove markdown code blocks
-    if (jsonText.startsWith('```json')) {
-      jsonText = jsonText.slice(7);
-    } else if (jsonText.startsWith('```')) {
-      jsonText = jsonText.slice(3);
+    // Try to extract JSON from code block (handles ```json ... ``` or ``` ... ```)
+    const codeBlockMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (codeBlockMatch) {
+      jsonText = codeBlockMatch[1].trim();
+    } else {
+      // No code block - try to find JSON array directly
+      const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        jsonText = arrayMatch[0];
+      }
     }
-    
-    if (jsonText.endsWith('```')) {
-      jsonText = jsonText.slice(0, -3);
-    }
-    
-    jsonText = jsonText.trim();
     
     const parsed = JSON.parse(jsonText);
     

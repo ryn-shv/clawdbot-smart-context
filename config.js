@@ -356,17 +356,17 @@ export const FEATURE_FLAGS = {
   get extractBatchSize() { return getNumericValue('SC_EXTRACT_BATCH_SIZE', 'SC_EXTRACT_BATCH_SIZE', 5); },
   
   /**
-   * Extraction Min Confidence (DEFAULT: 0.7)
+   * Extraction Min Confidence (DEFAULT: 0.5)
    * 
    * Minimum confidence score to store extracted facts.
    * Higher = only store highly confident facts.
    * Lower = store more facts but potentially less reliable.
    * 
    * Valid range: 0.0 to 1.0
-   * Recommended: 0.7-0.9
-   * Override with: SC_EXTRACT_MIN_CONFIDENCE=0.8
+   * Recommended: 0.5-0.9
+   * Override with: SC_EXTRACT_MIN_CONFIDENCE=0.6
    */
-  get extractMinConfidence() { return getNumericValue('SC_EXTRACT_MIN_CONFIDENCE', 'SC_EXTRACT_MIN_CONFIDENCE', 0.7, true); },
+  get extractMinConfidence() { return getNumericValue('SC_EXTRACT_MIN_CONFIDENCE', 'SC_EXTRACT_MIN_CONFIDENCE', 0.5, true); },
   
   /**
    * Extraction Model (DEFAULT: gemini-2.5-flash)

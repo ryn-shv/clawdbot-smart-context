@@ -338,7 +338,7 @@ async function handleBeforeAgentStart(event, ctx, config, api) {
   const callId = `bas-${Date.now()}-${sessionStats.hookCalls.beforeAgentStart}`;
   
   // Set session ID for log correlation
-  const sessionId = ctx?.sessionId || ctx?.session?.id || callId;
+  const sessionId = ctx?.sessionKey || ctx?.sessionId || ctx?.session?.id || callId;
   setSessionId(sessionId);
   
   const op = logger.startOp('before_agent_start', {
@@ -445,12 +445,22 @@ async function handleBeforeAgentStart(event, ctx, config, api) {
 async function handleAfterAgentEnd(event, ctx, config, api) {
   sessionStats.hookCalls.afterAgentEnd++;
   
+  // DEBUG: Log entry with context details
+  logger.info('🔍 AGENT_END HOOK ENTRY', {
+    hasMemory: FEATURE_FLAGS.memory,
+    hasExtract: FEATURE_FLAGS.memoryExtract,
+    sessionKey: ctx?.sessionKey,
+    sessionId: ctx?.sessionId,
+    eventMessagesCount: event.messages?.length
+  });
+  
   // Check if extraction is enabled
   if (!FEATURE_FLAGS.memory || !FEATURE_FLAGS.memoryExtract) {
+    logger.info('⏭️ EXTRACTION DISABLED - skipping');
     return undefined;
   }
   
-  const sessionId = ctx?.sessionId || ctx?.session?.id || 'unknown';
+  const sessionId = ctx?.sessionKey || ctx?.sessionId || ctx?.session?.id || 'unknown';
   
   const op = logger.startOp('agent_end', {
     sessionId,
@@ -470,12 +480,21 @@ async function handleAfterAgentEnd(event, ctx, config, api) {
     const userId = ctx?.userId || ctx?.user?.id || ctx?.session?.userId || 'default';
     const agentId = ctx?.agentId || 'main';
     
-    // Get assistant's response message
-    const responseMessage = event.response;
-    if (!responseMessage || responseMessage.role !== 'assistant') {
+    // Get assistant's response message from event.messages array
+    // Clawdbot sends messages snapshot, not a single response field
+    const responseMessage = event.messages?.slice().reverse().find(m => m.role === 'assistant');
+    if (!responseMessage) {
       op.end({ result: 'skipped', reason: 'no-assistant-response' });
       return undefined;
     }
+    
+    // DEBUG: Log extraction trigger details
+    const extractorStats = extractor.getSessionStats(sessionId);
+    logger.debug('Triggering message extraction', {
+      sessionId,
+      bufferSize: extractorStats.bufferSize,
+      responseLength: JSON.stringify(responseMessage).length
+    });
     
     // Process message for extraction (async, non-blocking)
     extractor.processMessage(
@@ -493,7 +512,16 @@ async function handleAfterAgentEnd(event, ctx, config, api) {
         resolveConflicts: FEATURE_FLAGS.extractConflicts,
         debug: config?.debug || false
       }
-    ).catch(err => {
+    ).then(result => {
+      // DEBUG: Log extraction completion
+      if (result) {
+        logger.debug('Extraction completed', {
+          sessionId,
+          extracted: result.extracted,
+          stored: result.stored
+        });
+      }
+    }).catch(err => {
       // Log extraction errors but don't block
       sessionStats.errors.extraction++;
       logger.error('Extraction processing error', {
@@ -548,7 +576,7 @@ async function handleToolResult(event, ctx, config, api) {
       toolName: event.toolName,
       toolUseId: event.toolUseId,
       result: event.result,
-      sessionId: ctx?.sessionId || 'default',
+      sessionId: ctx?.sessionKey || ctx?.sessionId || 'default',
       store: toolServices.store,
       summarizer: toolServices.summarizer,
       config: config
@@ -634,8 +662,8 @@ export function register(api) {
     logger.info('Registered hook: agent_end (extraction enabled)');
   }
 
-  // Register tool_result hook
-  api.on('tool_result', async (event, ctx) => {
+  // Register after_tool_call hook (intercept tool results for summarization)
+  api.on('after_tool_call', async (event, ctx) => {
     return handleToolResult(event, ctx, config, api);
   }, {
     name: 'tool-result-summarizer',
@@ -643,7 +671,7 @@ export function register(api) {
     priority: 50
   });
   
-  logger.info('Registered hook: tool_result');
+  logger.info('Registered hook: after_tool_call');
 
   // Register shutdown handler to flush logs
   if (typeof process !== 'undefined') {
@@ -658,7 +686,7 @@ export function register(api) {
     process.on('exit', shutdown);
   }
 
-  const hooks = ['before_agent_start', 'tool_result'];
+  const hooks = ['before_agent_start', 'after_tool_call'];
   if (FEATURE_FLAGS.memory && FEATURE_FLAGS.memoryExtract) {
     hooks.push('agent_end');
   }
