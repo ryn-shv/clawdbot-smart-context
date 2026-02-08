@@ -358,7 +358,12 @@ MIT © rynshv
 
 ## Changelog
 
-### v2.0.2 (2025-01-XX)
+### v2.0.3 (2025-06-09)
+- **CLEANUP**: Removed node-llama-cpp optional dependency (unused)
+- **FIX**: Simplified dependency tree (Transformers.js is primary)
+- **DOCS**: Updated migration history
+
+### v2.0.2 (2025-06-08)
 - **CRITICAL FIX**: `storeFact()` now properly stores embeddings via `cache.set()`
 - **CRITICAL FIX**: Extractor now computes embeddings for extracted facts
 - **FIX**: `retrieveFacts()` properly handles missing embeddings with BM25 fallback

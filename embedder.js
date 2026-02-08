@@ -7,7 +7,7 @@
  * - FALLBACK 2: Hash-based TF-IDF (offline, basic)
  * 
  * MIGRATION HISTORY:
- * - PHASE 0: node-llama-cpp (failed - missing GGUF model)
+ * - PHASE 0: (removed)
  * - PHASE 1: Transformers.js + hash fallback
  * - PHASE 2: Transformers.js + Gemini API + hash (current)
  * 
