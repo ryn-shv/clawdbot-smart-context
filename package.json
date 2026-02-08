@@ -1,6 +1,6 @@
 {
   "name": "clawdbot-smart-context",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Semantic context selection for Clawdbot - filters message history by relevance (Transformers.js + WebGPU)",
   "keywords": [
     "clawdbot",
@@ -86,5 +86,9 @@
     "node": ">=18.0.0"
   },
   "author": "rynshv",
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "node test-memory.js",
+    "test:memory": "node test-memory.js"
+  }
 }

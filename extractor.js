@@ -4,6 +4,11 @@
  * Monitors conversations and extracts important facts using LLM.
  * Implements batch extraction with configurable triggers.
  * 
+ * v2.0.2 FIXES:
+ * - Now computes and stores embeddings for extracted facts
+ * - Added embedder parameter to processMessage and extractFromBuffer
+ * - Facts are stored with embeddings for semantic search
+ * 
  * @module extractor
  */
 
@@ -33,7 +38,8 @@ function getSessionState(sessionId) {
       messageBuffer: [],
       lastExtraction: 0,
       totalExtractions: 0,
-      totalFactsExtracted: 0
+      totalFactsExtracted: 0,
+      totalEmbeddingsStored: 0
     });
   }
   return sessionState.get(sessionId);
@@ -173,13 +179,106 @@ async function extractFactsWithLLM(messages, llmCall, options = {}) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// v2.0.2: EMBEDDING COMPUTATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Compute embeddings for extracted facts
+ * 
+ * v2.0.2: New function to add embeddings to facts before storage
+ * 
+ * @param {Array<Object>} facts - Extracted facts without embeddings
+ * @param {Object} embedder - Embedder instance
+ * @param {Object} cache - Cache instance for storing embeddings
+ * @param {Object} options - Options
+ * @returns {Promise<Array<Object>>} Facts with embeddings attached
+ */
+async function computeFactEmbeddings(facts, embedder, cache, options = {}) {
+  const { debug = false } = options;
+  
+  if (!embedder || !facts || facts.length === 0) {
+    return facts;
+  }
+  
+  const factsWithEmbeddings = [];
+  let embeddingsComputed = 0;
+  let embeddingsCached = 0;
+  let embeddingsFailed = 0;
+  
+  for (const fact of facts) {
+    const factText = fact.fact || fact.value;
+    
+    if (!factText) {
+      factsWithEmbeddings.push(fact);
+      continue;
+    }
+    
+    try {
+      // Check cache first
+      let embedding = null;
+      
+      if (cache) {
+        embedding = await cache.get(factText);
+        if (embedding) {
+          embeddingsCached++;
+        }
+      }
+      
+      // Compute embedding if not cached
+      if (!embedding && embedder) {
+        embedding = await embedder.embed(factText);
+        embeddingsComputed++;
+        
+        // Store in cache for future use
+        if (cache && embedding) {
+          await cache.set(factText, embedding);
+        }
+      }
+      
+      // Add embedding to fact
+      factsWithEmbeddings.push({
+        ...fact,
+        embedding: embedding || null
+      });
+      
+    } catch (err) {
+      embeddingsFailed++;
+      if (debug) {
+        logger.debug('Failed to compute embedding for fact', {
+          fact: factText.slice(0, 50),
+          error: err.message
+        });
+      }
+      // Still include fact without embedding
+      factsWithEmbeddings.push({
+        ...fact,
+        embedding: null
+      });
+    }
+  }
+  
+  if (debug) {
+    logger.debug('Computed embeddings for facts', {
+      total: facts.length,
+      computed: embeddingsComputed,
+      cached: embeddingsCached,
+      failed: embeddingsFailed
+    });
+  }
+  
+  return factsWithEmbeddings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // FACT STORAGE
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Store extracted facts in memory
  * 
- * @param {Array<Object>} facts - Extracted facts
+ * v2.0.2: Now expects facts to have embeddings attached
+ * 
+ * @param {Array<Object>} facts - Extracted facts with embeddings
  * @param {Object} memory - Memory API instance
  * @param {Object} context - Extraction context
  * @param {Object} options - Options
@@ -197,7 +296,8 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
     stored: 0,
     skipped: 0,
     updated: 0,
-    errors: 0
+    errors: 0,
+    embeddingsStored: 0
   };
   
   for (const fact of facts) {
@@ -214,7 +314,7 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
     }
     
     try {
-      // Store fact in memory
+      // v2.0.2: Include embedding in storeFact call
       const result = await memory.storeFact({
         userId,
         agentId,
@@ -222,11 +322,13 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
         scope,
         value: fact.fact,
         category: fact.category,
+        embedding: fact.embedding, // v2.0.2: Pass embedding!
         metadata: {
           extracted_at: Date.now(),
           source_context: fact.source_context,
           confidence: fact.confidence,
-          extraction_method: 'llm'
+          extraction_method: 'llm',
+          has_embedding: !!fact.embedding
         }
       });
       
@@ -236,10 +338,15 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
         results.updated++;
       }
       
+      if (result.embeddingStored) {
+        results.embeddingsStored++;
+      }
+      
       if (debug) {
         logger.debug('Stored fact', {
           factId: result.factId,
           created: result.created,
+          embeddingStored: result.embeddingStored,
           fact: fact.fact.slice(0, 50)
         });
       }
@@ -262,15 +369,17 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
 /**
  * Process new message for extraction
  * 
+ * v2.0.2: Added embedder parameter for computing fact embeddings
+ * 
  * @param {Object} message - New message
  * @param {Object} context - Context (sessionId, userId, agentId)
- * @param {Object} services - Services (memory, llmCall, cache)
+ * @param {Object} services - Services (memory, llmCall, cache, embedder)
  * @param {Object} config - Extraction config
  * @returns {Promise<Object|null>} Extraction results if triggered, null otherwise
  */
 export async function processMessage(message, context, services, config) {
   const { sessionId } = context;
-  const { memory, llmCall, cache } = services;
+  const { memory, llmCall, cache, embedder } = services;
   
   // Get session state
   const state = getSessionState(sessionId);
@@ -295,14 +404,16 @@ export async function processMessage(message, context, services, config) {
 /**
  * Extract facts from message buffer
  * 
+ * v2.0.2: Now computes embeddings for extracted facts
+ * 
  * @param {Object} state - Session state
  * @param {Object} context - Context (userId, agentId, sessionId)
- * @param {Object} services - Services (memory, llmCall, cache)
+ * @param {Object} services - Services (memory, llmCall, cache, embedder)
  * @param {Object} config - Extraction config
  * @returns {Promise<Object>} Extraction results
  */
 async function extractFromBuffer(state, context, services, config) {
-  const { memory, llmCall, cache } = services;
+  const { memory, llmCall, cache, embedder } = services;
   const { userId, agentId, sessionId } = context;
   
   const op = logger.startOp('extract_batch', {
@@ -312,7 +423,7 @@ async function extractFromBuffer(state, context, services, config) {
   
   try {
     // Extract facts using LLM
-    const extractedFacts = await extractFactsWithLLM(
+    let extractedFacts = await extractFactsWithLLM(
       state.messageBuffer,
       llmCall,
       { debug: config.debug }
@@ -331,8 +442,25 @@ async function extractFromBuffer(state, context, services, config) {
         stored: 0,
         updated: 0,
         skipped: 0,
-        errors: 0
+        errors: 0,
+        embeddingsStored: 0
       };
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // v2.0.2 FIX: Compute embeddings BEFORE conflict resolution
+    // This ensures all facts have embeddings for storage
+    // ═══════════════════════════════════════════════════════════════════
+    if (embedder) {
+      extractedFacts = await computeFactEmbeddings(
+        extractedFacts,
+        embedder,
+        cache,
+        { debug: config.debug }
+      );
+      op.checkpoint('embeddings_computed', {
+        withEmbeddings: extractedFacts.filter(f => f.embedding).length
+      });
     }
     
     // Resolve conflicts
@@ -357,17 +485,18 @@ async function extractFromBuffer(state, context, services, config) {
         if (action.action === 'add') {
           factsToStore.push(action.fact);
         } else if (action.action === 'update') {
-          // Update existing fact
+          // Update existing fact (include embedding if available)
           await memory.updateFact(action.fact.id, {
             value: action.fact.value,
-            metadata: action.fact.metadata
+            metadata: action.fact.metadata,
+            embedding: action.fact.embedding
           });
         }
         // Skip 'keep' and 'defer' actions
       }
     }
     
-    // Store facts
+    // Store facts (now with embeddings)
     const results = await storeExtractedFacts(
       factsToStore,
       memory,
@@ -380,6 +509,7 @@ async function extractFromBuffer(state, context, services, config) {
     state.lastExtraction = Date.now();
     state.totalExtractions++;
     state.totalFactsExtracted += results.stored + results.updated;
+    state.totalEmbeddingsStored += results.embeddingsStored;
     
     op.end({
       result: 'success',
@@ -392,7 +522,8 @@ async function extractFromBuffer(state, context, services, config) {
       extracted: extractedFacts.length,
       stored: results.stored,
       updated: results.updated,
-      skipped: results.skipped
+      skipped: results.skipped,
+      embeddingsStored: results.embeddingsStored
     });
     
     return {
@@ -416,6 +547,7 @@ async function extractFromBuffer(state, context, services, config) {
       updated: 0,
       skipped: 0,
       errors: 1,
+      embeddingsStored: 0,
       error: err.message
     };
   }
@@ -426,7 +558,7 @@ async function extractFromBuffer(state, context, services, config) {
  * 
  * @param {string} sessionId - Session ID
  * @param {Object} context - Context (userId, agentId)
- * @param {Object} services - Services (memory, llmCall, cache)
+ * @param {Object} services - Services (memory, llmCall, cache, embedder)
  * @param {Object} config - Extraction config
  * @returns {Promise<Object>} Extraction results
  */
@@ -439,7 +571,8 @@ export async function forceExtraction(sessionId, context, services, config) {
       stored: 0,
       updated: 0,
       skipped: 0,
-      errors: 0
+      errors: 0,
+      embeddingsStored: 0
     };
   }
   
@@ -465,6 +598,7 @@ export function getSessionStats(sessionId) {
       bufferSize: 0,
       totalExtractions: 0,
       totalFactsExtracted: 0,
+      totalEmbeddingsStored: 0,
       lastExtraction: null
     };
   }
@@ -473,6 +607,7 @@ export function getSessionStats(sessionId) {
     bufferSize: state.messageBuffer.length,
     totalExtractions: state.totalExtractions,
     totalFactsExtracted: state.totalFactsExtracted,
+    totalEmbeddingsStored: state.totalEmbeddingsStored || 0,
     lastExtraction: state.lastExtraction || null
   };
 }

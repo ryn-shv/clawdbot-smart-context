@@ -483,6 +483,7 @@ async function handleAfterAgentEnd(event, ctx, config, api) {
       { sessionId, userId, agentId },
       {
         memory: memoryAPI,
+        embedder,  // v2.0.2: Add embedder for fact embeddings
         llmCall: llmClient,
         cache
       },
