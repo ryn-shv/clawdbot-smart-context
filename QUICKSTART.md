@@ -259,7 +259,7 @@ clawdbot gateway restart
 ## What's Next?
 
 - **Tune performance**: See [CONFIGURATION.md](./CONFIGURATION.md)
-- **Understand architecture**: See [ARCHITECTURE.md](./ARCHITECTURE.md)
+- **Understand architecture**: See the [README](./README.md)
 - **Full installation guide**: See [INSTALLATION.md](./INSTALLATION.md)
 - **Report issues**: https://github.com/ryn-shv/clawdbot-smart-context/issues
 

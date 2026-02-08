@@ -151,4 +151,4 @@ The 2.1.x release introduces hybrid memory (facts + summaries) with **backward-c
 
 ---
 
-For detailed upgrade guides, see [MIGRATION.md](./MIGRATION.md).
+For detailed upgrade guides, see [CHANGELOG.md](./CHANGELOG.md).

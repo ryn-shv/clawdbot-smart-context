@@ -229,7 +229,7 @@ Expected output:
 ✅ ALL TESTS PASSED - Memory system working correctly!
 ```
 
-**📖 Architecture details:** [HYBRID-MEMORY-DESIGN.md](https://github.com/ryn-shv/clawdbot-smart-context/blob/main/docs/HYBRID-MEMORY-DESIGN.md)
+**📖 Version history:** [CHANGELOG.md](./CHANGELOG.md)
 
 ---
 

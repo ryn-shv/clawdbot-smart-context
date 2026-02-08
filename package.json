@@ -31,7 +31,9 @@
     "README.md",
     "CHANGELOG.md",
     "INSTALLATION.md",
-    "LICENSE"
+    "LICENSE",
+    "CONFIGURATION.md",
+    "QUICKSTART.md"
   ],
   "repository": {
     "type": "git",
@@ -93,7 +95,11 @@
         },
         "SC_STORAGE_MODE": {
           "type": "string",
-          "enum": ["facts", "semantic", "hybrid"],
+          "enum": [
+            "facts",
+            "semantic",
+            "hybrid"
+          ],
           "default": "hybrid",
           "description": "Memory storage mode: facts only, summaries only, or both"
         },
@@ -156,7 +162,7 @@
   "scripts": {
     "test": "node test-memory.js",
     "test:memory": "node test-memory.js",
-    "postinstall": "node scripts/postinstall.js || true",
+    "postinstall": "node scripts/postinstall.cjs || true",
     "apply-patches": "bash scripts/apply-patches.sh",
     "check-patches": "bash scripts/check-patches.sh",
     "revert-patches": "bash scripts/revert-patches.sh",

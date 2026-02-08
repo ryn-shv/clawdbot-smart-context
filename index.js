@@ -8,7 +8,7 @@
  * v2.1.0: Hybrid Memory — extracts facts AND summaries from conversations
  * 
  * @author Shiv (Exo)
- * @version 2.1.0
+ * @version 2.1.1
  */
 
 import { createEmbedder } from './embedder.js';

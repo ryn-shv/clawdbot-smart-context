@@ -29,7 +29,7 @@
       },
       "stripOldToolCalls": {
         "type": "boolean",
-        "default": true
+        "default": false
       },
       "cachePath": {
         "type": "string",

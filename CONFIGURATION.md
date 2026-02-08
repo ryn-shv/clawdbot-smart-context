@@ -709,7 +709,7 @@ Remove the `config` block:
 
 - **Quick Start**: [QUICKSTART.md](./QUICKSTART.md)
 - **Installation**: [INSTALLATION.md](./INSTALLATION.md)
-- **Performance**: [PERFORMANCE.md](./PERFORMANCE.md)
+- **Performance**: [CONFIGURATION.md](./CONFIGURATION.md)
 
 ---
 

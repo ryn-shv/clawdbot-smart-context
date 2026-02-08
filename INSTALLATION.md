@@ -598,9 +598,9 @@ Edit `~/.clawdbot/clawdbot.json` and remove the `smart-context` entry.
 ## Next Steps
 
 - **Configuration Tuning**: See [CONFIGURATION.md](./CONFIGURATION.md) for advanced options
-- **Architecture**: Read [ARCHITECTURE.md](./ARCHITECTURE.md) to understand how it works
-- **Performance**: Check [PERFORMANCE.md](./PERFORMANCE.md) for optimization tips
-- **API Reference**: See [API.md](./API.md) for programmatic usage
+- **Architecture**: Read the [README](./README.md) to understand how it works
+- **Performance**: Check [CONFIGURATION.md](./CONFIGURATION.md) for optimization tips
+- **API Reference**: See [README](./README.md) for programmatic usage
 
 ---
 
