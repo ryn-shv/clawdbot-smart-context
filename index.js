@@ -1,14 +1,14 @@
 /**
- * Smart Context Plugin for Clawdbot v2.0
+ * Smart Context Plugin for Clawdbot v2.1
  * 
  * Filters message history by semantic relevance before LLM calls.
  * Reduces token usage and improves response quality by focusing on
  * relevant context.
  * 
- * Features comprehensive logging for debugging and monitoring.
+ * v2.1.0: Hybrid Memory — extracts facts AND summaries from conversations
  * 
  * @author Shiv (Exo)
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 import { createEmbedder } from './embedder.js';
@@ -138,7 +138,8 @@ async function ensureInitialized(config, api) {
     op.checkpoint('creating memory system');
     memoryAPI = memory.createMemory(cache, { debug });
     logger.info('Memory system initialized', { 
-      enabled: FEATURE_FLAGS.memory 
+      enabled: FEATURE_FLAGS.memory,
+      storageMode: FEATURE_FLAGS.storageMode
     });
     
     op.checkpoint('initializing tool services');
@@ -156,12 +157,13 @@ async function ensureInitialized(config, api) {
       op.checkpoint('creating LLM client for extraction');
       llmClient = createExtractionLLMClient(api, config);
       logger.info('LLM client for extraction initialized', {
-        model: FEATURE_FLAGS.extractModel
+        model: FEATURE_FLAGS.extractModel,
+        storageMode: FEATURE_FLAGS.storageMode
       });
     }
 
     op.end({ result: 'success' });
-    logger.info('✅ Smart context v2.0 initialized');
+    logger.info(`✅ Smart context v2.1.0 initialized (storageMode: ${FEATURE_FLAGS.storageMode})`);
     
   } catch (err) {
     sessionStats.errors.initialization++;
@@ -327,6 +329,28 @@ function getEffectiveConfig(baseConfig, modelId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HELPER: Extract text content from a message
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Check if a message is a tool call/result (should be skipped for extraction)
+ */
+function isToolMessage(message) {
+  if (!message) return true;
+  if (message.role === 'tool' || message.role === 'system') return true;
+  
+  // Check for tool_use content blocks
+  if (Array.isArray(message.content)) {
+    const hasToolBlocks = message.content.some(
+      block => block && (block.type === 'tool_use' || block.type === 'tool_result')
+    );
+    if (hasToolBlocks) return true;
+  }
+  
+  return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HOOK HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -441,22 +465,16 @@ async function handleBeforeAgentStart(event, ctx, config, api) {
 
 /**
  * agent_end hook handler (Phase 4B: Extraction)
+ * 
+ * v2.1.0 CRITICAL FIX: Now passes BOTH user AND assistant messages to extractor
+ * Previously only passed the assistant response, which caused empty extractions
+ * because assistant messages are code explanations, not facts.
  */
 async function handleAfterAgentEnd(event, ctx, config, api) {
   sessionStats.hookCalls.afterAgentEnd++;
   
-  // DEBUG: Log entry with context details
-  logger.info('🔍 AGENT_END HOOK ENTRY', {
-    hasMemory: FEATURE_FLAGS.memory,
-    hasExtract: FEATURE_FLAGS.memoryExtract,
-    sessionKey: ctx?.sessionKey,
-    sessionId: ctx?.sessionId,
-    eventMessagesCount: event.messages?.length
-  });
-  
   // Check if extraction is enabled
   if (!FEATURE_FLAGS.memory || !FEATURE_FLAGS.memoryExtract) {
-    logger.info('⏭️ EXTRACTION DISABLED - skipping');
     return undefined;
   }
   
@@ -464,7 +482,7 @@ async function handleAfterAgentEnd(event, ctx, config, api) {
   
   const op = logger.startOp('agent_end', {
     sessionId,
-    hasResponse: !!event.response
+    storageMode: FEATURE_FLAGS.storageMode
   });
   
   try {
@@ -480,49 +498,80 @@ async function handleAfterAgentEnd(event, ctx, config, api) {
     const userId = ctx?.userId || ctx?.user?.id || ctx?.session?.userId || 'default';
     const agentId = ctx?.agentId || 'main';
     
-    // Get assistant's response message from event.messages array
-    // Clawdbot sends messages snapshot, not a single response field
-    const responseMessage = event.messages?.slice().reverse().find(m => m.role === 'assistant');
-    if (!responseMessage) {
-      op.end({ result: 'skipped', reason: 'no-assistant-response' });
+    // ═══════════════════════════════════════════════════════════════════
+    // v2.1.0 BUG FIX: Get BOTH user and assistant messages
+    // The old code only extracted from the last assistant message,
+    // which produces empty results because assistant messages are
+    // code explanations, not user preferences/decisions.
+    // ═══════════════════════════════════════════════════════════════════
+    
+    const messages = event.messages || [];
+    
+    // Get last N recent user + assistant messages (skip tool messages)
+    const recentMessages = messages
+      .slice(-8) // Last 8 messages max (up to 4 exchanges)
+      .filter(m => !isToolMessage(m));
+    
+    if (recentMessages.length === 0) {
+      op.end({ result: 'skipped', reason: 'no-extractable-messages' });
       return undefined;
     }
     
-    // DEBUG: Log extraction trigger details
-    const extractorStats = extractor.getSessionStats(sessionId);
-    logger.debug('Triggering message extraction', {
+    // Must have at least one user message in the batch
+    const hasUserMessage = recentMessages.some(m => m.role === 'user');
+    if (!hasUserMessage) {
+      op.end({ result: 'skipped', reason: 'no-user-messages' });
+      return undefined;
+    }
+    
+    logger.debug('Processing messages for extraction', {
       sessionId,
-      bufferSize: extractorStats.bufferSize,
-      responseLength: JSON.stringify(responseMessage).length
+      totalMessages: messages.length,
+      extractableMessages: recentMessages.length,
+      roles: recentMessages.map(m => m.role),
+      storageMode: FEATURE_FLAGS.storageMode
     });
     
-    // Process message for extraction (async, non-blocking)
-    extractor.processMessage(
-      responseMessage,
-      { sessionId, userId, agentId },
-      {
-        memory: memoryAPI,
-        embedder,  // v2.0.2: Add embedder for fact embeddings
-        llmCall: llmClient,
-        cache
-      },
-      {
-        batchSize: FEATURE_FLAGS.extractBatchSize,
-        minConfidence: FEATURE_FLAGS.extractMinConfidence,
-        resolveConflicts: FEATURE_FLAGS.extractConflicts,
-        debug: config?.debug || false
+    // Process ALL recent messages for extraction (async, non-blocking)
+    // v2.1.0: Feed them all to the buffer at once
+    const extractionPromise = (async () => {
+      let lastResult = null;
+      
+      for (const msg of recentMessages) {
+        lastResult = await extractor.processMessage(
+          msg,
+          { sessionId, userId, agentId },
+          {
+            memory: memoryAPI,
+            embedder,
+            llmCall: llmClient,
+            cache
+          },
+          {
+            batchSize: FEATURE_FLAGS.extractBatchSize,
+            minConfidence: FEATURE_FLAGS.extractMinConfidence,
+            resolveConflicts: FEATURE_FLAGS.extractConflicts,
+            storageMode: FEATURE_FLAGS.storageMode,
+            dedupThreshold: FEATURE_FLAGS.summaryDedupThreshold,
+            debug: config?.debug || false
+          }
+        );
       }
-    ).then(result => {
-      // DEBUG: Log extraction completion
+      
+      return lastResult;
+    })();
+    
+    extractionPromise.then(result => {
       if (result) {
-        logger.debug('Extraction completed', {
+        logger.info('Extraction completed', {
           sessionId,
           extracted: result.extracted,
-          stored: result.stored
+          stored: result.stored,
+          summaryStored: result.summaryStored,
+          storageMode: FEATURE_FLAGS.storageMode
         });
       }
     }).catch(err => {
-      // Log extraction errors but don't block
       sessionStats.errors.extraction++;
       logger.error('Extraction processing error', {
         sessionId,
@@ -530,7 +579,7 @@ async function handleAfterAgentEnd(event, ctx, config, api) {
       });
     });
     
-    op.end({ result: 'queued' });
+    op.end({ result: 'queued', messagesQueued: recentMessages.length });
     
   } catch (err) {
     sessionStats.errors.extraction++;
@@ -622,18 +671,19 @@ async function handleToolResult(event, ctx, config, api) {
 export function register(api) {
   const config = api.pluginConfig;
   // CRITICAL FIX: Initialize config BEFORE evaluating feature flags
-  // Hook registration checks FEATURE_FLAGS which read from pluginConfig
   initializeConfig(config || {});
 
+  const storageMode = FEATURE_FLAGS.storageMode;
   
-  logger.marker('SMART CONTEXT PLUGIN v2.0 REGISTRATION');
+  logger.marker('SMART CONTEXT PLUGIN v2.1.0 REGISTRATION');
   
   logger.info('Registering smart-context plugin', {
-    version: '2.0.0',
+    version: '2.1.0',
     debug: config?.debug || false,
     enabled: config?.enabled !== false,
     memoryEnabled: FEATURE_FLAGS.memory,
-    extractionEnabled: FEATURE_FLAGS.memoryExtract
+    extractionEnabled: FEATURE_FLAGS.memoryExtract,
+    storageMode
   });
 
   // Register before_agent_start hook
@@ -655,11 +705,11 @@ export function register(api) {
       return handleAfterAgentEnd(event, ctx, config, api);
     }, {
       name: 'smart-context-extractor',
-      description: 'Extracts facts from conversations for memory storage',
+      description: `Extracts facts/summaries from conversations (mode: ${storageMode})`,
       priority: 50
     });
     
-    logger.info('Registered hook: agent_end (extraction enabled)');
+    logger.info(`Registered hook: agent_end (extraction enabled, storageMode: ${storageMode})`);
   }
 
   // Register after_tool_call hook (intercept tool results for summarization)
@@ -693,7 +743,8 @@ export function register(api) {
 
   logger.info('✅ Smart-context hooks registered', {
     hooks,
-    profiles: Object.keys(MODEL_PROFILES)
+    profiles: Object.keys(MODEL_PROFILES),
+    storageMode
   });
   
   // Log current metrics path
@@ -706,8 +757,8 @@ export function register(api) {
 
 export const id = 'smart-context';
 export const name = 'Smart Context';
-export const version = '2.0.0';
-export const description = 'Semantic context selection and tool result summarization with comprehensive logging';
+export const version = '2.1.0';
+export const description = 'Semantic context selection, tool result summarization, and hybrid memory with comprehensive logging';
 export const kind = 'hook';
 
 /**

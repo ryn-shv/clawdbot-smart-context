@@ -1,0 +1,16 @@
+--- a/dist/agents/pi-embedded-runner/run/attempt.js
++++ b/dist/agents/pi-embedded-runner/run/attempt.js
+@@ -585,6 +585,12 @@ export async function runEmbeddedAttempt(params) {
+                         if (hookResult?.prependContext) {
+                             effectivePrompt = `${hookResult.prependContext}\n\n${params.prompt}`;
+                             log.debug(`hooks: prepended context to prompt (${hookResult.prependContext.length} chars)`);
+                         }
++                        // PATCHED: Smart context - allow hooks to filter/replace messages
++                        if (hookResult?.messages && Array.isArray(hookResult.messages)) {
++                            const originalCount = activeSession.messages.length;
++                            activeSession.agent.replaceMessages(hookResult.messages);
++                            log.debug(`hooks: replaced messages (${originalCount} -> ${hookResult.messages.length})`);
++                        }
+                     }
+                     catch (hookErr) {
+                         log.warn(`before_agent_start hook failed: ${String(hookErr)}`);

@@ -9,13 +9,21 @@
  * - Added embedder parameter to processMessage and extractFromBuffer
  * - Facts are stored with embeddings for semantic search
  * 
+ * v2.1.0: Hybrid extraction pipeline (facts + summaries)
+ * - New hybrid prompts extract both facts AND summaries
+ * - Storage routing based on storageMode config
+ * - Processes BOTH user and assistant messages
+ * 
  * @module extractor
  */
 
 import {
   EXTRACTION_SYSTEM_PROMPT,
+  HYBRID_EXTRACTION_SYSTEM_PROMPT,
   generateExtractionPrompt,
-  parseExtractionResponse
+  generateHybridExtractionPrompt,
+  parseExtractionResponse,
+  parseHybridExtractionResponse
 } from './extraction-prompts.js';
 import { batchResolveConflicts } from './conflict-resolver.js';
 import { createLogger } from './logger.js';
@@ -39,6 +47,7 @@ function getSessionState(sessionId) {
       lastExtraction: 0,
       totalExtractions: 0,
       totalFactsExtracted: 0,
+      totalSummariesStored: 0,
       totalEmbeddingsStored: 0
     });
   }
@@ -59,6 +68,8 @@ export function clearSessionState(sessionId) {
 /**
  * Check if message should be considered for extraction
  * 
+ * v2.1.0: More permissive — accepts both user and assistant messages
+ * 
  * @param {Object} message - Message object
  * @returns {boolean} True if message is extractable
  */
@@ -78,7 +89,7 @@ function isExtractableMessage(message) {
     return false;
   }
   
-  // Skip messages with tool_use content blocks
+  // Skip messages with tool_use content blocks (these are function calls, not conversation)
   if (Array.isArray(message.content)) {
     const hasToolUse = message.content.some(
       block => block.type === 'tool_use' || block.type === 'tool_result'
@@ -120,8 +131,7 @@ function shouldTriggerExtraction(state, config) {
     return true;
   }
   
-  // Check time-based trigger (if buffer has messages and enough time passed)
-  // Works for first extraction too (lastExtraction = 0 means use buffer start time)
+  // Check time-based trigger
   if (state.messageBuffer.length > 0) {
     const timeReference = state.lastExtraction > 0 
       ? state.lastExtraction 
@@ -140,7 +150,7 @@ function shouldTriggerExtraction(state, config) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Call LLM for fact extraction
+ * Call LLM for fact extraction (legacy, facts-only mode)
  * 
  * @param {Array<Object>} messages - Messages to extract from
  * @param {Function} llmCall - LLM client function
@@ -154,7 +164,7 @@ async function extractFactsWithLLM(messages, llmCall, options = {}) {
     const prompt = generateExtractionPrompt(messages);
     
     if (debug) {
-      logger.debug('Calling LLM for extraction', {
+      logger.debug('Calling LLM for facts-only extraction', {
         messageCount: messages.length,
         promptLength: prompt.length
       });
@@ -162,30 +172,14 @@ async function extractFactsWithLLM(messages, llmCall, options = {}) {
     
     const response = await llmCall(prompt, {
       systemPrompt: EXTRACTION_SYSTEM_PROMPT,
-      temperature: 0.3, // Low temperature for consistent extraction
+      temperature: 0.3,
       maxTokens: 1000
     });
     
-    // DEBUG: Log raw LLM response
-    if (debug) {
-      logger.debug('Raw LLM extraction response', {
-        responsePreview: response?.slice(0, 200),
-        responseLength: response?.length
-      });
-    }
-    
     const facts = parseExtractionResponse(response);
     
-    // DEBUG: Log parsed facts
     if (debug) {
-      logger.debug('Parsed extraction result', {
-        factsCount: facts.length,
-        factsPreview: facts.map(f => f.fact?.slice(0, 50))
-      });
-    }
-    
-    if (debug) {
-      logger.debug('LLM extraction complete', {
+      logger.debug('Facts-only extraction complete', {
         factsExtracted: facts.length
       });
     }
@@ -193,8 +187,60 @@ async function extractFactsWithLLM(messages, llmCall, options = {}) {
     return facts;
   } catch (err) {
     logger.error('LLM extraction failed', { error: err.message });
-    // Return empty array on error instead of throwing
     return [];
+  }
+}
+
+/**
+ * v2.1.0: Call LLM for hybrid extraction (facts + summary)
+ * 
+ * @param {Array<Object>} messages - Messages to extract from
+ * @param {Function} llmCall - LLM client function
+ * @param {Object} options - Options
+ * @returns {Promise<{facts: Array, summary: Object|null}>} Hybrid extraction result
+ */
+async function extractHybridWithLLM(messages, llmCall, options = {}) {
+  const { debug = false, context = {} } = options;
+  
+  try {
+    const prompt = generateHybridExtractionPrompt(messages, context);
+    
+    if (debug) {
+      logger.debug('Calling LLM for hybrid extraction', {
+        messageCount: messages.length,
+        promptLength: prompt.length,
+        storageMode: 'hybrid'
+      });
+    }
+    
+    const response = await llmCall(prompt, {
+      systemPrompt: HYBRID_EXTRACTION_SYSTEM_PROMPT,
+      temperature: 0.3,
+      maxTokens: 4000 // v2.1.1: Generous limit to prevent truncation
+    });
+    
+    if (debug) {
+      logger.debug('Raw hybrid LLM response', {
+        responsePreview: response?.slice(0, 300),
+        responseLength: response?.length
+      });
+    }
+    
+    const result = parseHybridExtractionResponse(response);
+    
+    if (debug) {
+      logger.debug('Hybrid extraction parsed', {
+        factsCount: result.facts.length,
+        hasSummary: !!result.summary,
+        summaryTopic: result.summary?.topic?.slice(0, 50),
+        factsPreview: result.facts.map(f => f.fact?.slice(0, 50))
+      });
+    }
+    
+    return result;
+  } catch (err) {
+    logger.error('Hybrid LLM extraction failed', { error: err.message });
+    return { facts: [], summary: null };
   }
 }
 
@@ -204,8 +250,6 @@ async function extractFactsWithLLM(messages, llmCall, options = {}) {
 
 /**
  * Compute embeddings for extracted facts
- * 
- * v2.0.2: New function to add embeddings to facts before storage
  * 
  * @param {Array<Object>} facts - Extracted facts without embeddings
  * @param {Object} embedder - Embedder instance
@@ -234,7 +278,6 @@ async function computeFactEmbeddings(facts, embedder, cache, options = {}) {
     }
     
     try {
-      // Check cache first
       let embedding = null;
       
       if (cache) {
@@ -244,18 +287,15 @@ async function computeFactEmbeddings(facts, embedder, cache, options = {}) {
         }
       }
       
-      // Compute embedding if not cached
       if (!embedding && embedder) {
         embedding = await embedder.embed(factText);
         embeddingsComputed++;
         
-        // Store in cache for future use
         if (cache && embedding) {
           await cache.set(factText, embedding);
         }
       }
       
-      // Add embedding to fact
       factsWithEmbeddings.push({
         ...fact,
         embedding: embedding || null
@@ -269,7 +309,6 @@ async function computeFactEmbeddings(facts, embedder, cache, options = {}) {
           error: err.message
         });
       }
-      // Still include fact without embedding
       factsWithEmbeddings.push({
         ...fact,
         embedding: null
@@ -289,14 +328,50 @@ async function computeFactEmbeddings(facts, embedder, cache, options = {}) {
   return factsWithEmbeddings;
 }
 
+/**
+ * v2.1.0: Compute embedding for a summary
+ * 
+ * @param {Object} summary - Summary object
+ * @param {Object} embedder - Embedder instance
+ * @param {Object} cache - Cache instance
+ * @param {Object} options - Options
+ * @returns {Promise<Array<number>|null>} Embedding or null
+ */
+async function computeSummaryEmbedding(summary, embedder, cache, options = {}) {
+  const { debug = false } = options;
+  
+  if (!embedder || !summary || !summary.content) {
+    return null;
+  }
+  
+  const text = `${summary.topic}: ${summary.content}`;
+  
+  try {
+    // Check cache first
+    let embedding = cache ? await cache.get(text) : null;
+    
+    if (!embedding) {
+      embedding = await embedder.embed(text);
+      if (cache && embedding) {
+        await cache.set(text, embedding);
+      }
+    }
+    
+    return embedding;
+  } catch (err) {
+    if (debug) {
+      logger.debug('Failed to compute summary embedding', { error: err.message });
+    }
+    return null;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // FACT STORAGE
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Store extracted facts in memory
- * 
- * v2.0.2: Now expects facts to have embeddings attached
  * 
  * @param {Array<Object>} facts - Extracted facts with embeddings
  * @param {Object} memory - Memory API instance
@@ -334,7 +409,6 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
     }
     
     try {
-      // v2.0.2: Include embedding in storeFact call
       const result = await memory.storeFact({
         userId,
         agentId,
@@ -342,13 +416,15 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
         scope,
         value: fact.fact,
         category: fact.category,
-        embedding: fact.embedding, // v2.0.2: Pass embedding!
+        embedding: fact.embedding,
         metadata: {
           extracted_at: Date.now(),
           source_context: fact.source_context,
           confidence: fact.confidence,
           extraction_method: 'llm',
-          has_embedding: !!fact.embedding
+          has_embedding: !!fact.embedding,
+          entity: fact.entity || null,
+          project: fact.project || null
         }
       });
       
@@ -382,6 +458,56 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
   return results;
 }
 
+/**
+ * v2.1.0: Store extracted summary in memory
+ * 
+ * @param {Object} summary - Summary object {topic, content, entities, projects}
+ * @param {Object} memory - Memory API instance
+ * @param {Object} context - Extraction context
+ * @param {Object} options - Options
+ * @returns {Promise<Object>} Storage result
+ */
+async function storeExtractedSummary(summary, memory, context, options = {}) {
+  const { debug = false, embedding = null, dedupThreshold = 0.85 } = options;
+  const { userId, agentId, sessionId } = context;
+  
+  if (!summary || !summary.topic || !summary.content) {
+    return { stored: false, reason: 'invalid-summary' };
+  }
+  
+  try {
+    const result = await memory.storeSummary({
+      userId,
+      agentId,
+      sessionId,
+      topic: summary.topic,
+      content: summary.content,
+      entities: summary.entities || [],
+      projects: summary.projects || [],
+      embedding,
+      sourceMessages: context.sourceMessages || 0,
+      dedupThreshold
+    });
+    
+    if (debug) {
+      logger.debug('Stored summary', {
+        summaryId: result.summaryId,
+        created: result.created,
+        merged: result.merged,
+        topic: summary.topic.slice(0, 50)
+      });
+    }
+    
+    return { stored: true, ...result };
+  } catch (err) {
+    logger.error('Failed to store summary', {
+      topic: summary.topic,
+      error: err.message
+    });
+    return { stored: false, error: err.message };
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN EXTRACTION PIPELINE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -389,7 +515,7 @@ async function storeExtractedFacts(facts, memory, context, options = {}) {
 /**
  * Process new message for extraction
  * 
- * v2.0.2: Added embedder parameter for computing fact embeddings
+ * v2.1.0: Supports hybrid extraction and accepts both user + assistant messages
  * 
  * @param {Object} message - New message
  * @param {Object} context - Context (sessionId, userId, agentId)
@@ -422,9 +548,9 @@ export async function processMessage(message, context, services, config) {
 }
 
 /**
- * Extract facts from message buffer
+ * Extract from message buffer
  * 
- * v2.0.2: Now computes embeddings for extracted facts
+ * v2.1.0: Hybrid extraction pipeline with storageMode routing
  * 
  * @param {Object} state - Session state
  * @param {Object} context - Context (userId, agentId, sessionId)
@@ -435,121 +561,211 @@ export async function processMessage(message, context, services, config) {
 async function extractFromBuffer(state, context, services, config) {
   const { memory, llmCall, cache, embedder } = services;
   const { userId, agentId, sessionId } = context;
+  const storageMode = config.storageMode || 'hybrid';
   
   const op = logger.startOp('extract_batch', {
     sessionId,
-    bufferSize: state.messageBuffer.length
+    bufferSize: state.messageBuffer.length,
+    storageMode
   });
   
   try {
-    // Extract facts using LLM
-    let extractedFacts = await extractFactsWithLLM(
-      state.messageBuffer,
-      llmCall,
-      { debug: config.debug }
-    );
+    let extractedFacts = [];
+    let extractedSummary = null;
     
-    op.checkpoint('facts_extracted', { count: extractedFacts.length });
+    // ═══════════════════════════════════════════════════════════════════
+    // Route extraction based on storageMode
+    // ═══════════════════════════════════════════════════════════════════
     
-    if (extractedFacts.length === 0) {
-      // No facts extracted, clear buffer
+    if (storageMode === 'facts') {
+      // Legacy facts-only mode (v2.0.x behavior)
+      extractedFacts = await extractFactsWithLLM(
+        state.messageBuffer,
+        llmCall,
+        { debug: config.debug }
+      );
+    } else {
+      // Hybrid or semantic mode — use new hybrid prompt
+      const hybridResult = await extractHybridWithLLM(
+        state.messageBuffer,
+        llmCall,
+        { 
+          debug: config.debug,
+          context: config.extractionContext || {}
+        }
+      );
+      
+      if (storageMode === 'semantic') {
+        // Semantic-only: discard facts, keep summary
+        extractedFacts = [];
+        extractedSummary = hybridResult.summary;
+      } else {
+        // Hybrid: keep both
+        extractedFacts = hybridResult.facts;
+        extractedSummary = hybridResult.summary;
+      }
+    }
+    
+    op.checkpoint('extraction_complete', { 
+      factsCount: extractedFacts.length, 
+      hasSummary: !!extractedSummary 
+    });
+    
+    // Early exit if nothing extracted
+    if (extractedFacts.length === 0 && !extractedSummary) {
       state.messageBuffer = [];
       state.lastExtraction = Date.now();
       
-      op.end({ result: 'no_facts' });
+      op.end({ result: 'no_extraction' });
       return {
         extracted: 0,
         stored: 0,
         updated: 0,
         skipped: 0,
         errors: 0,
-        embeddingsStored: 0
+        embeddingsStored: 0,
+        summaryStored: false
       };
     }
     
     // ═══════════════════════════════════════════════════════════════════
-    // v2.0.2 FIX: Compute embeddings BEFORE conflict resolution
-    // This ensures all facts have embeddings for storage
+    // Process facts (if any)
     // ═══════════════════════════════════════════════════════════════════
-    if (embedder) {
-      extractedFacts = await computeFactEmbeddings(
-        extractedFacts,
-        embedder,
-        cache,
-        { debug: config.debug }
-      );
-      op.checkpoint('embeddings_computed', {
-        withEmbeddings: extractedFacts.filter(f => f.embedding).length
-      });
-    }
     
-    // Resolve conflicts
-    let factsToStore = extractedFacts;
+    let factResults = {
+      stored: 0,
+      updated: 0,
+      skipped: 0,
+      errors: 0,
+      embeddingsStored: 0
+    };
     
-    if (config.resolveConflicts !== false) {
-      const actions = await batchResolveConflicts(
-        extractedFacts,
-        memory,
-        userId,
-        cache,
-        llmCall,
-        { debug: config.debug }
-      );
-      
-      op.checkpoint('conflicts_resolved', { actions: actions.length });
-      
-      // Apply conflict resolution actions
-      factsToStore = [];
-      
-      for (const action of actions) {
-        if (action.action === 'add') {
-          factsToStore.push(action.fact);
-        } else if (action.action === 'update') {
-          // Update existing fact (include embedding if available)
-          await memory.updateFact(action.fact.id, {
-            value: action.fact.value,
-            metadata: action.fact.metadata,
-            embedding: action.fact.embedding
-          });
-        }
-        // Skip 'keep' and 'defer' actions
+    if (extractedFacts.length > 0) {
+      // Compute embeddings
+      if (embedder) {
+        extractedFacts = await computeFactEmbeddings(
+          extractedFacts,
+          embedder,
+          cache,
+          { debug: config.debug }
+        );
+        op.checkpoint('fact_embeddings_computed', {
+          withEmbeddings: extractedFacts.filter(f => f.embedding).length
+        });
       }
+      
+      // Resolve conflicts
+      let factsToStore = extractedFacts;
+      
+      if (config.resolveConflicts !== false) {
+        const actions = await batchResolveConflicts(
+          extractedFacts,
+          memory,
+          userId,
+          cache,
+          llmCall,
+          { debug: config.debug }
+        );
+        
+        op.checkpoint('conflicts_resolved', { actions: actions.length });
+        
+        factsToStore = [];
+        
+        for (const action of actions) {
+          if (action.action === 'add') {
+            factsToStore.push(action.fact);
+          } else if (action.action === 'update') {
+            await memory.updateFact(action.fact.id, {
+              value: action.fact.value,
+              metadata: action.fact.metadata,
+              embedding: action.fact.embedding
+            });
+          }
+        }
+      }
+      
+      // Store facts
+      factResults = await storeExtractedFacts(
+        factsToStore,
+        memory,
+        { userId, agentId, sessionId, scope: 'user' },
+        { minConfidence: config.minConfidence || 0.7, debug: config.debug }
+      );
     }
     
-    // Store facts (now with embeddings)
-    const results = await storeExtractedFacts(
-      factsToStore,
-      memory,
-      { userId, agentId, sessionId, scope: 'user' },
-      { minConfidence: config.minConfidence || 0.7, debug: config.debug }
-    );
+    // ═══════════════════════════════════════════════════════════════════
+    // Process summary (if any) — v2.1.0
+    // ═══════════════════════════════════════════════════════════════════
     
+    let summaryResult = { stored: false };
+    
+    if (extractedSummary) {
+      // Compute summary embedding
+      let summaryEmbedding = null;
+      if (embedder) {
+        summaryEmbedding = await computeSummaryEmbedding(
+          extractedSummary,
+          embedder,
+          cache,
+          { debug: config.debug }
+        );
+        op.checkpoint('summary_embedding_computed', { hasEmbedding: !!summaryEmbedding });
+      }
+      
+      summaryResult = await storeExtractedSummary(
+        extractedSummary,
+        memory,
+        { 
+          userId, agentId, sessionId, 
+          sourceMessages: state.messageBuffer.length 
+        },
+        { 
+          debug: config.debug, 
+          embedding: summaryEmbedding,
+          dedupThreshold: config.dedupThreshold || 0.85
+        }
+      );
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════
     // Update state
+    // ═══════════════════════════════════════════════════════════════════
+    
     state.messageBuffer = [];
     state.lastExtraction = Date.now();
     state.totalExtractions++;
-    state.totalFactsExtracted += results.stored + results.updated;
-    state.totalEmbeddingsStored += results.embeddingsStored;
+    state.totalFactsExtracted += factResults.stored + factResults.updated;
+    state.totalEmbeddingsStored += factResults.embeddingsStored;
+    if (summaryResult.stored) {
+      state.totalSummariesStored++;
+    }
+    
+    const totalResult = {
+      extracted: extractedFacts.length,
+      ...factResults,
+      summaryStored: summaryResult.stored,
+      summaryMerged: summaryResult.merged || false,
+      summaryId: summaryResult.summaryId || null
+    };
     
     op.end({
       result: 'success',
-      extracted: extractedFacts.length,
-      ...results
+      ...totalResult
     });
     
     logger.info('Extraction batch complete', {
       sessionId,
+      storageMode,
       extracted: extractedFacts.length,
-      stored: results.stored,
-      updated: results.updated,
-      skipped: results.skipped,
-      embeddingsStored: results.embeddingsStored
+      stored: factResults.stored,
+      updated: factResults.updated,
+      skipped: factResults.skipped,
+      embeddingsStored: factResults.embeddingsStored,
+      summaryStored: summaryResult.stored,
+      summaryMerged: summaryResult.merged || false
     });
     
-    return {
-      extracted: extractedFacts.length,
-      ...results
-    };
+    return totalResult;
   } catch (err) {
     op.error(err);
     logger.error('Extraction batch failed', {
@@ -568,6 +784,7 @@ async function extractFromBuffer(state, context, services, config) {
       skipped: 0,
       errors: 1,
       embeddingsStored: 0,
+      summaryStored: false,
       error: err.message
     };
   }
@@ -592,7 +809,8 @@ export async function forceExtraction(sessionId, context, services, config) {
       updated: 0,
       skipped: 0,
       errors: 0,
-      embeddingsStored: 0
+      embeddingsStored: 0,
+      summaryStored: false
     };
   }
   
@@ -618,6 +836,7 @@ export function getSessionStats(sessionId) {
       bufferSize: 0,
       totalExtractions: 0,
       totalFactsExtracted: 0,
+      totalSummariesStored: 0,
       totalEmbeddingsStored: 0,
       lastExtraction: null
     };
@@ -627,6 +846,7 @@ export function getSessionStats(sessionId) {
     bufferSize: state.messageBuffer.length,
     totalExtractions: state.totalExtractions,
     totalFactsExtracted: state.totalFactsExtracted,
+    totalSummariesStored: state.totalSummariesStored || 0,
     totalEmbeddingsStored: state.totalEmbeddingsStored || 0,
     lastExtraction: state.lastExtraction || null
   };

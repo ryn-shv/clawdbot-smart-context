@@ -511,6 +511,63 @@ export function createCache(config = {}) {
         console.log(`[smart-context] Phase 4 memory initialized: ${factCount.count} facts, ${patternCount.count} patterns`);
       }
 
+
+      // ═══════════════════════════════════════════════════════════════════
+      // PHASE 4.1: MEMORY SUMMARIES (v2.1.0 Hybrid Memory)
+      // ═══════════════════════════════════════════════════════════════════
+      
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_summaries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          agent_id TEXT,
+          session_id TEXT,
+          topic TEXT NOT NULL,
+          content TEXT NOT NULL,
+          entities TEXT,
+          projects TEXT,
+          content_hash TEXT,
+          source_messages INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_accessed_at INTEGER NOT NULL,
+          metadata TEXT
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_summaries_user
+        ON memory_summaries(user_id);
+        
+        CREATE INDEX IF NOT EXISTS idx_summaries_user_topic
+        ON memory_summaries(user_id, topic);
+        
+        CREATE INDEX IF NOT EXISTS idx_summaries_lru
+        ON memory_summaries(last_accessed_at);
+        
+        CREATE INDEX IF NOT EXISTS idx_summaries_content_hash
+        ON memory_summaries(content_hash);
+      `);
+      
+      // FTS5 for summary full-text search (graceful fallback)
+      try {
+        db.exec(`
+          CREATE VIRTUAL TABLE IF NOT EXISTS fts_summaries
+          USING fts5(
+            summary_id UNINDEXED,
+            topic,
+            content,
+            entities,
+            tokenize='porter unicode61'
+          );
+        `);
+      } catch (ftsErr) {
+        console.warn('[smart-context] FTS5 for summaries not available:', ftsErr.message);
+      }
+      
+      if (debug) {
+        const summaryCount = db.prepare('SELECT COUNT(*) as count FROM memory_summaries').get();
+        console.log(`[smart-context] Phase 4.1 summaries initialized: ${summaryCount.count} summaries`);
+      }
+
       // Release pooled connection
       if (pool) {
         pool.release(db);

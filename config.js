@@ -447,6 +447,54 @@ export const FEATURE_FLAGS = {
    */
   get memoryUserLimit() { return getNumericValue('SC_MEMORY_USER_LIMIT', 'SC_MEMORY_USER_LIMIT', 1000); },
 
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // PHASE 4.1: HYBRID MEMORY (v2.1.0)
+  // ═══════════════════════════════════════════════════════════════════════
+  
+  /**
+   * Storage Mode (DEFAULT: "hybrid")
+   * 
+   * Controls what type of memory gets stored:
+   * - "facts": Only structured facts (v2.0.x behavior)
+   * - "semantic": Only topic summaries
+   * - "hybrid": Both facts AND summaries (recommended)
+   * 
+   * Override with: SC_STORAGE_MODE=facts
+   */
+  get storageMode() {
+    const val = getStringValue('SC_STORAGE_MODE', 'SC_STORAGE_MODE', 'hybrid');
+    const valid = ['facts', 'semantic', 'hybrid'];
+    return valid.includes(val) ? val : 'hybrid';
+  },
+  
+  /**
+   * Summary Max Length (DEFAULT: 500)
+   * 
+   * Maximum character length for summary content.
+   * Override with: SC_SUMMARY_MAX_LENGTH=800
+   */
+  get summaryMaxLength() { return getNumericValue('SC_SUMMARY_MAX_LENGTH', 'SC_SUMMARY_MAX_LENGTH', 500); },
+  
+  /**
+   * Summary Dedup Threshold (DEFAULT: 0.85)
+   * 
+   * Cosine similarity threshold for summary deduplication.
+   * Summaries with topic similarity above this are merged instead of duplicated.
+   * 
+   * Valid range: 0.5 to 1.0
+   * Override with: SC_SUMMARY_DEDUP_THRESHOLD=0.80
+   */
+  get summaryDedupThreshold() { return getNumericValue('SC_SUMMARY_DEDUP_THRESHOLD', 'SC_SUMMARY_DEDUP_THRESHOLD', 0.85, true); },
+  
+  /**
+   * Summary Limit (DEFAULT: 500)
+   * 
+   * Maximum summaries per user before LRU eviction.
+   * Override with: SC_SUMMARY_LIMIT=1000
+   */
+  get summaryLimit() { return getNumericValue('SC_SUMMARY_LIMIT', 'SC_SUMMARY_LIMIT', 500); },
+
   // CONFIGURATION OVERRIDES
   // ═══════════════════════════════════════════════════════════════════════
   
@@ -645,6 +693,24 @@ export function validateConfig() {
     );
   }
   
+  
+  // Validate storage mode
+  const storageMode = FEATURE_FLAGS.storageMode;
+  if (!['facts', 'semantic', 'hybrid'].includes(storageMode)) {
+    warnings.push(
+      `storageMode must be 'facts', 'semantic', or 'hybrid' (got: ${storageMode}). ` +
+      `Check SC_STORAGE_MODE`
+    );
+  }
+  
+  // Validate summary dedup threshold
+  const dedupThreshold = FEATURE_FLAGS.summaryDedupThreshold;
+  if (dedupThreshold < 0.5 || dedupThreshold > 1.0) {
+    warnings.push(
+      `summaryDedupThreshold (${dedupThreshold}) out of range [0.5, 1.0]. ` +
+      `Check SC_SUMMARY_DEDUP_THRESHOLD`
+    );
+  }
   return warnings;
 }
 

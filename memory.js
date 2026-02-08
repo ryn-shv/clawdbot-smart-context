@@ -11,6 +11,8 @@
  * - Added storeFactWithEmbedding() helper for explicit embedding storage
  * - retrieveFacts() properly computes query embeddings for semantic search
  * 
+ * v2.1.0: Added storeSummary(), retrieveSummaries() for hybrid memory
+ * 
  * @module memory
  */
 
@@ -203,15 +205,11 @@ export function createMemory(cache, config = {}) {
         // Get database connection from cache
         const conn = await cache._getConnection();
         
-        // ═══════════════════════════════════════════════════════════════════
-        // v2.0.2 FIX: Store embedding in embeddings table
-        // This is CRITICAL for semantic search to work!
-        // ═══════════════════════════════════════════════════════════════════
+        // Store embedding in embeddings table
         let embeddingStored = false;
         
         if (embedding && Array.isArray(embedding) && embedding.length > 0) {
           try {
-            // Store embedding via cache.set() which handles the embeddings table
             await cache.set(value, embedding);
             embeddingStored = true;
             
@@ -219,7 +217,6 @@ export function createMemory(cache, config = {}) {
               console.log(`[memory] Stored embedding for fact (dim: ${embedding.length}, hash: ${contentHash.slice(0, 8)}...)`);
             }
           } catch (embedErr) {
-            // Log error but continue - fact can still be stored without embedding
             console.warn(`[memory] Failed to store embedding: ${embedErr.message}`);
           }
         }
@@ -289,19 +286,13 @@ export function createMemory(cache, config = {}) {
     /**
      * Retrieve relevant facts using hybrid scoring (BM25 + cosine similarity)
      * 
-     * v2.0.2 FIX: Properly handles query embedding for semantic search
-     * 
      * @param {Object} params
      * @param {string} params.userId - User identifier (REQUIRED)
      * @param {string} params.query - Query text for similarity search
      * @param {string} [params.agentId] - Filter to agent-specific facts
      * @param {string} [params.sessionId] - Filter to session-specific facts
-     * @param {Array<number>} [params.queryEmbedding] - Pre-computed query embedding (improves performance)
+     * @param {Array<number>} [params.queryEmbedding] - Pre-computed query embedding
      * @param {Object} [params.options] - Retrieval options
-     * @param {number} [params.options.topK=10] - Max facts to return
-     * @param {number} [params.options.minScore=0.75] - Min similarity threshold
-     * @param {string[]} [params.options.scopes] - Scopes to search (default: all)
-     * @param {string[]} [params.options.categories] - Filter by categories
      * @returns {Promise<Array<Fact>>}
      */
     async retrieveFacts(params) {
@@ -369,14 +360,10 @@ export function createMemory(cache, config = {}) {
           return [];
         }
         
-        // ═══════════════════════════════════════════════════════════════════
-        // v2.0.2 FIX: Get query embedding for semantic search
-        // Use provided embedding OR try to get from cache
-        // ═══════════════════════════════════════════════════════════════════
+        // Get query embedding for semantic search
         let queryVector = queryEmbedding;
         
         if (!queryVector) {
-          // Try to get cached embedding for query
           queryVector = await cache.get(query);
           
           if (debug && queryVector) {
@@ -411,10 +398,9 @@ export function createMemory(cache, config = {}) {
           }
           
           // Hybrid score: weighted average (60% cosine, 40% BM25)
-          // If no embeddings available, fall back to BM25 only
           const hybridScore = queryVector && row.embedding
             ? (cosineScore * 0.6) + (bm25Score * 0.4)
-            : bm25Score * 0.8; // Downweight BM25-only results
+            : bm25Score * 0.8;
           
           if (hybridScore >= minScore || bm25Score > 0.5) {
             scored.push({
@@ -423,7 +409,7 @@ export function createMemory(cache, config = {}) {
               value: row.value,
               category: row.category,
               key: row.key,
-              score: Math.max(hybridScore, bm25Score * 0.8), // Ensure keyword matches aren't ignored
+              score: Math.max(hybridScore, bm25Score * 0.8),
               cosineScore,
               bm25Score,
               hasEmbedding: !!row.embedding,
@@ -470,6 +456,366 @@ export function createMemory(cache, config = {}) {
       }
     },
     
+    // ═══════════════════════════════════════════════════════════════════════
+    // v2.1.0: SUMMARY STORAGE & RETRIEVAL
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    /**
+     * Store a conversation summary with deduplication
+     * 
+     * If a similar summary (by topic embedding similarity) already exists,
+     * the existing summary is updated/merged instead of duplicated.
+     * 
+     * @param {Object} params
+     * @param {string} params.userId - User identifier (REQUIRED)
+     * @param {string} [params.agentId] - Agent identifier
+     * @param {string} [params.sessionId] - Session identifier
+     * @param {string} params.topic - Short topic label
+     * @param {string} params.content - Summary paragraph
+     * @param {Array<string>} [params.entities] - Mentioned entities
+     * @param {Array<string>} [params.projects] - Related project slugs
+     * @param {Array<number>} [params.embedding] - Pre-computed content embedding
+     * @param {number} [params.sourceMessages] - How many messages this summarizes
+     * @param {number} [params.dedupThreshold] - Cosine similarity threshold for dedup
+     * @returns {Promise<{summaryId: number, created: boolean, merged: boolean}>}
+     */
+    async storeSummary(params) {
+      const { 
+        userId, agentId, sessionId, topic, content, 
+        entities, projects, embedding, sourceMessages,
+        dedupThreshold = 0.85
+      } = params;
+      
+      if (!userId) {
+        throw new MemoryException(MemoryError.MISSING_USER_ID, 'userId is required');
+      }
+      
+      if (!topic || !content) {
+        throw new MemoryException(MemoryError.STORAGE_FAILED, 'topic and content are required');
+      }
+      
+      try {
+        const conn = await cache._getConnection();
+        const now = Date.now();
+        
+        // Check for existing similar summary (dedup by topic similarity)
+        let existingSummary = null;
+        
+        // First try exact topic match
+        const exactMatch = conn.prepare(`
+          SELECT s.*, e.embedding 
+          FROM memory_summaries s
+          LEFT JOIN embeddings e ON s.content_hash = e.content_hash
+          WHERE s.user_id = ? AND s.topic = ?
+          ORDER BY s.updated_at DESC LIMIT 1
+        `).get(userId, topic);
+        
+        if (exactMatch) {
+          existingSummary = exactMatch;
+        } else if (embedding) {
+          // Try semantic dedup using topic embedding
+          const candidates = conn.prepare(`
+            SELECT s.*, e.embedding 
+            FROM memory_summaries s
+            LEFT JOIN embeddings e ON s.content_hash = e.content_hash
+            WHERE s.user_id = ?
+            ORDER BY s.updated_at DESC LIMIT 50
+          `).all(userId);
+          
+          for (const candidate of candidates) {
+            if (candidate.embedding) {
+              const candidateEmbedding = deserializeEmbedding(candidate.embedding);
+              if (candidateEmbedding) {
+                const similarity = cosineSimilarity(embedding, candidateEmbedding);
+                if (similarity >= dedupThreshold) {
+                  existingSummary = candidate;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        
+        if (existingSummary) {
+          // Merge with existing summary
+          const existingEntities = existingSummary.entities ? JSON.parse(existingSummary.entities) : [];
+          const existingProjects = existingSummary.projects ? JSON.parse(existingSummary.projects) : [];
+          
+          const mergedEntities = [...new Set([...existingEntities, ...(entities || [])])];
+          const mergedProjects = [...new Set([...existingProjects, ...(projects || [])])];
+          
+          // Append update to content (cap at 1000 chars)
+          const mergedContent = existingSummary.content === content 
+            ? content 
+            : `${existingSummary.content}\n\nUpdate: ${content}`.slice(0, 1000);
+          
+          const mergedHash = hashContent(mergedContent);
+          
+          conn.prepare(`
+            UPDATE memory_summaries 
+            SET content = ?, entities = ?, projects = ?, content_hash = ?,
+                updated_at = ?, last_accessed_at = ?,
+                source_messages = source_messages + ?
+            WHERE id = ?
+          `).run(
+            mergedContent,
+            JSON.stringify(mergedEntities),
+            JSON.stringify(mergedProjects),
+            mergedHash,
+            now, now,
+            sourceMessages || 0,
+            existingSummary.id
+          );
+          
+          // Update embedding for merged content
+          if (embedding) {
+            await cache.set(mergedContent, embedding);
+          }
+          
+          // Update FTS (try-catch since FTS might not be available)
+          try {
+            conn.prepare(`
+              UPDATE fts_summaries 
+              SET topic = ?, content = ?, entities = ?
+              WHERE summary_id = ?
+            `).run(topic, mergedContent, JSON.stringify(mergedEntities), String(existingSummary.id));
+          } catch (ftsErr) {
+            // FTS not available, that's ok
+          }
+          
+          cache._releaseConnection(conn);
+          
+          if (debug) {
+            console.log(`[memory] Merged summary ${existingSummary.id} for user ${userId} (topic: ${topic})`);
+          }
+          
+          return { summaryId: existingSummary.id, created: false, merged: true };
+        }
+        
+        // Insert new summary
+        const contentHash = hashContent(content);
+        
+        const result = conn.prepare(`
+          INSERT INTO memory_summaries 
+          (user_id, agent_id, session_id, topic, content, entities, projects,
+           content_hash, source_messages, created_at, updated_at, last_accessed_at, metadata)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          userId, agentId || null, sessionId || null,
+          topic, content,
+          JSON.stringify(entities || []),
+          JSON.stringify(projects || []),
+          contentHash,
+          sourceMessages || 0,
+          now, now, now,
+          null
+        );
+        
+        const summaryId = result.lastInsertRowid;
+        
+        // Store embedding
+        if (embedding) {
+          await cache.set(content, embedding);
+        }
+        
+        // Index in FTS5 (try-catch)
+        try {
+          conn.prepare(`
+            INSERT INTO fts_summaries (summary_id, topic, content, entities)
+            VALUES (?, ?, ?, ?)
+          `).run(String(summaryId), topic, content, JSON.stringify(entities || []));
+        } catch (ftsErr) {
+          // FTS not available
+        }
+        
+        cache._releaseConnection(conn);
+        
+        if (debug) {
+          console.log(`[memory] Stored new summary ${summaryId} for user ${userId} (topic: ${topic})`);
+        }
+        
+        return { summaryId, created: true, merged: false };
+      } catch (err) {
+        if (debug) console.error('[memory] storeSummary error:', err);
+        throw new MemoryException(MemoryError.STORAGE_FAILED, err.message);
+      }
+    },
+    
+    /**
+     * Retrieve relevant summaries using hybrid search (FTS5 + cosine similarity)
+     * 
+     * @param {Object} params
+     * @param {string} params.userId - User identifier (REQUIRED)
+     * @param {string} params.query - Search query
+     * @param {Array<number>} [params.queryEmbedding] - Pre-computed query embedding
+     * @param {Object} [params.options] - Retrieval options
+     * @param {number} [params.options.topK=5] - Max summaries to return
+     * @param {number} [params.options.minScore=0.3] - Min relevance threshold
+     * @param {string[]} [params.options.projects] - Filter by project slugs
+     * @returns {Promise<Array>}
+     */
+    async retrieveSummaries(params) {
+      const { userId, query, queryEmbedding, options = {} } = params;
+      const {
+        topK = 5,
+        minScore = 0.3,
+        projects
+      } = options;
+      
+      if (!userId) {
+        throw new MemoryException(MemoryError.MISSING_USER_ID, 'userId is required');
+      }
+      
+      if (!query) {
+        throw new MemoryException(MemoryError.MISSING_QUERY, 'query is required');
+      }
+      
+      try {
+        const conn = await cache._getConnection();
+        
+        // Strategy 1: FTS5 full-text search
+        let ftsResults = [];
+        try {
+          ftsResults = conn.prepare(`
+            SELECT summary_id, rank 
+            FROM fts_summaries 
+            WHERE fts_summaries MATCH ? 
+            ORDER BY rank 
+            LIMIT 20
+          `).all(query);
+        } catch (ftsErr) {
+          // FTS not available, skip
+        }
+        
+        const ftsIds = new Set(ftsResults.map(r => parseInt(r.summary_id)));
+        
+        // Strategy 2: Get all summaries for user (capped)
+        let sql = `
+          SELECT s.*, e.embedding 
+          FROM memory_summaries s
+          LEFT JOIN embeddings e ON s.content_hash = e.content_hash
+          WHERE s.user_id = ?
+        `;
+        const sqlParams = [userId];
+        
+        if (projects && projects.length > 0) {
+          // Filter by project — use JSON matching
+          const projectConditions = projects.map(() => `s.projects LIKE ?`).join(' OR ');
+          sql += ` AND (${projectConditions})`;
+          for (const p of projects) {
+            sqlParams.push(`%"${p}"%`);
+          }
+        }
+        
+        sql += ` ORDER BY s.last_accessed_at DESC LIMIT 200`;
+        
+        const rows = conn.prepare(sql).all(...sqlParams);
+        
+        if (rows.length === 0) {
+          cache._releaseConnection(conn);
+          return [];
+        }
+        
+        // Get query embedding
+        let queryVector = queryEmbedding;
+        if (!queryVector) {
+          queryVector = await cache.get(query);
+        }
+        
+        // Score each summary
+        const scored = [];
+        
+        for (const row of rows) {
+          let score = 0;
+          
+          // FTS boost
+          if (ftsIds.has(row.id)) {
+            score += 0.4; // FTS match bonus
+          }
+          
+          // BM25 keyword score on topic + content
+          const textForBM25 = `${row.topic} ${row.content}`;
+          const bm25Score = computeBM25Score(query, textForBM25);
+          score += bm25Score * 0.3;
+          
+          // Cosine similarity
+          let cosineScore = 0;
+          if (row.embedding && queryVector) {
+            const summaryEmbedding = deserializeEmbedding(row.embedding);
+            if (summaryEmbedding) {
+              cosineScore = cosineSimilarity(queryVector, summaryEmbedding);
+              score += cosineScore * 0.5;
+            }
+          }
+          
+          // Entity/project keyword match bonus
+          const entitiesStr = row.entities || '[]';
+          const projectsStr = row.projects || '[]';
+          const queryLower = query.toLowerCase();
+          
+          try {
+            const entArr = JSON.parse(entitiesStr);
+            if (entArr.some(e => queryLower.includes(e.toLowerCase()) || e.toLowerCase().includes(queryLower))) {
+              score += 0.15;
+            }
+          } catch (e) {}
+          
+          try {
+            const projArr = JSON.parse(projectsStr);
+            if (projArr.some(p => queryLower.includes(p.toLowerCase()) || p.toLowerCase().includes(queryLower))) {
+              score += 0.1;
+            }
+          } catch (e) {}
+          
+          if (score >= minScore) {
+            scored.push({
+              id: row.id,
+              topic: row.topic,
+              content: row.content,
+              entities: row.entities ? JSON.parse(row.entities) : [],
+              projects: row.projects ? JSON.parse(row.projects) : [],
+              score,
+              cosineScore,
+              bm25Score,
+              sourceMessages: row.source_messages,
+              createdAt: row.created_at,
+              updatedAt: row.updated_at,
+              source: 'summary' // Tag for unified retrieval
+            });
+          }
+        }
+        
+        // Sort by score
+        scored.sort((a, b) => b.score - a.score);
+        const results = scored.slice(0, topK);
+        
+        // Update last_accessed_at
+        if (results.length > 0) {
+          const now = Date.now();
+          const updateStmt = conn.prepare(
+            'UPDATE memory_summaries SET last_accessed_at = ? WHERE id = ?'
+          );
+          for (const summary of results) {
+            updateStmt.run(now, summary.id);
+          }
+        }
+        
+        cache._releaseConnection(conn);
+        
+        if (debug) {
+          console.log(`[memory] Retrieved ${results.length} summaries for user ${userId}`, {
+            query: query.slice(0, 50),
+            queryHadEmbedding: !!queryVector
+          });
+        }
+        
+        return results;
+      } catch (err) {
+        if (debug) console.error('[memory] retrieveSummaries error:', err);
+        throw new MemoryException(MemoryError.RETRIEVAL_FAILED, err.message);
+      }
+    },
+    
     /**
      * Update an existing fact
      * 
@@ -495,7 +841,6 @@ export function createMemory(cache, config = {}) {
             fields.push('content_hash = ?');
             values.push(newHash);
             
-            // v2.0.2 FIX: Store new embedding if provided
             if (updates.embedding && Array.isArray(updates.embedding)) {
               await cache.set(updates.value, updates.embedding);
               if (debug) {
@@ -573,13 +918,6 @@ export function createMemory(cache, config = {}) {
     
     /**
      * Store or update a behavioral pattern
-     * 
-     * @param {Object} params
-     * @param {string} params.userId - User identifier (REQUIRED)
-     * @param {string} params.agentId - Agent identifier (REQUIRED)
-     * @param {string} params.patternType - Pattern category
-     * @param {string} params.description - Pattern description
-     * @returns {Promise<{patternId: number, confidence: number, observations: number}>}
      */
     async storePattern(params) {
       const { userId, agentId, patternType, description } = params;
@@ -596,7 +934,6 @@ export function createMemory(cache, config = {}) {
         const conn = await cache._getConnection();
         const now = Date.now();
         
-        // Check if pattern exists
         const existing = conn.prepare(`
           SELECT id, observation_count, confidence 
           FROM memory_patterns 
@@ -606,9 +943,8 @@ export function createMemory(cache, config = {}) {
         let patternId, observations, confidence;
         
         if (existing) {
-          // Update existing pattern
           observations = existing.observation_count + 1;
-          confidence = Math.min(0.95, existing.confidence + 0.1); // Cap at 0.95
+          confidence = Math.min(0.95, existing.confidence + 0.1);
           
           conn.prepare(`
             UPDATE memory_patterns 
@@ -618,7 +954,6 @@ export function createMemory(cache, config = {}) {
           
           patternId = existing.id;
         } else {
-          // Insert new pattern
           const result = conn.prepare(`
             INSERT INTO memory_patterns 
             (user_id, agent_id, pattern_type, observation_count, confidence, description, created_at, updated_at)
@@ -645,12 +980,6 @@ export function createMemory(cache, config = {}) {
     
     /**
      * Retrieve behavioral patterns for a user+agent
-     * 
-     * @param {Object} params
-     * @param {string} params.userId - User identifier (REQUIRED)
-     * @param {string} params.agentId - Agent identifier (REQUIRED)
-     * @param {number} [params.minConfidence=0.5] - Minimum confidence threshold
-     * @returns {Promise<Array>}
      */
     async retrievePatterns(params) {
       const { userId, agentId, minConfidence = 0.5 } = params;
@@ -695,11 +1024,6 @@ export function createMemory(cache, config = {}) {
     
     /**
      * Log an interaction with a fact
-     * 
-     * @param {Object} params
-     * @param {number} params.factId - Fact ID
-     * @param {string} params.type - Interaction type
-     * @returns {Promise<void>}
      */
     async logInteraction(params) {
       const { factId, type } = params;
@@ -714,16 +1038,12 @@ export function createMemory(cache, config = {}) {
         
         cache._releaseConnection(conn);
       } catch (err) {
-        // Log errors but don't throw (non-critical operation)
         if (debug) console.error('[memory] logInteraction error:', err);
       }
     },
     
     /**
      * Clean up session-scoped facts
-     * 
-     * @param {string} sessionId - Session to cleanup
-     * @returns {Promise<{deleted: number}>}
      */
     async cleanupSession(sessionId) {
       try {
@@ -748,11 +1068,6 @@ export function createMemory(cache, config = {}) {
     
     /**
      * Clean up old facts (LRU eviction)
-     * 
-     * @param {Object} params
-     * @param {string} params.scope - Scope to cleanup
-     * @param {number} params.limit - Max facts to keep
-     * @returns {Promise<{deleted: number}>}
      */
     async cleanupOldFacts(params) {
       const { scope, limit } = params;
@@ -784,11 +1099,39 @@ export function createMemory(cache, config = {}) {
     },
     
     /**
+     * Clean up old summaries (LRU eviction)
+     */
+    async cleanupOldSummaries(params) {
+      const { userId, limit = 500 } = params;
+      
+      try {
+        const conn = await cache._getConnection();
+        
+        const result = conn.prepare(`
+          DELETE FROM memory_summaries 
+          WHERE user_id = ? AND id NOT IN (
+            SELECT id FROM memory_summaries 
+            WHERE user_id = ?
+            ORDER BY last_accessed_at DESC 
+            LIMIT ?
+          )
+        `).run(userId, userId, limit);
+        
+        cache._releaseConnection(conn);
+        
+        if (debug && result.changes > 0) {
+          console.log(`[memory] Cleaned up ${result.changes} old summaries`);
+        }
+        
+        return { deleted: result.changes };
+      } catch (err) {
+        if (debug) console.error('[memory] cleanupOldSummaries error:', err);
+        return { deleted: 0 };
+      }
+    },
+    
+    /**
      * Clean up old interactions
-     * 
-     * @param {Object} params
-     * @param {number} params.olderThan - Timestamp threshold (ms)
-     * @returns {Promise<{deleted: number}>}
      */
     async cleanupInteractions(params) {
       const { olderThan } = params;
@@ -815,18 +1158,10 @@ export function createMemory(cache, config = {}) {
     
     /**
      * GDPR-compliant deletion of all user data
-     * 
-     * @param {string} userId - User identifier
-     * @returns {Promise<{deletedFacts: number, deletedPatterns: number, deletedInteractions: number}>}
      */
     async forgetAll(userId) {
       try {
         const conn = await cache._getConnection();
-        
-        // Get fact IDs before deleting (for cascade)
-        const factIds = conn.prepare(
-          'SELECT id FROM memory_facts WHERE user_id = ?'
-        ).all(userId).map(row => row.id);
         
         // Delete facts
         const factsResult = conn.prepare(
@@ -838,18 +1173,24 @@ export function createMemory(cache, config = {}) {
           'DELETE FROM memory_patterns WHERE user_id = ?'
         ).run(userId);
         
-        // Interactions cascade automatically via FK
+        // Delete summaries (v2.1.0)
+        let summariesResult = { changes: 0 };
+        try {
+          summariesResult = conn.prepare(
+            'DELETE FROM memory_summaries WHERE user_id = ?'
+          ).run(userId);
+        } catch (e) {}
         
         cache._releaseConnection(conn);
         
         if (debug) {
-          console.log(`[memory] GDPR deletion for user ${userId}: ${factsResult.changes} facts, ${patternsResult.changes} patterns`);
+          console.log(`[memory] GDPR deletion for user ${userId}: ${factsResult.changes} facts, ${patternsResult.changes} patterns, ${summariesResult.changes} summaries`);
         }
         
         return {
           deletedFacts: factsResult.changes,
           deletedPatterns: patternsResult.changes,
-          deletedInteractions: factIds.length // Approximate
+          deletedSummaries: summariesResult.changes
         };
       } catch (err) {
         if (debug) console.error('[memory] forgetAll error:', err);
@@ -858,7 +1199,7 @@ export function createMemory(cache, config = {}) {
     },
     
     /**
-     * Get memory statistics
+     * Get memory statistics (v2.1.0: includes summary stats)
      * 
      * @param {string} userId - User identifier
      * @returns {Promise<Object>}
@@ -875,7 +1216,6 @@ export function createMemory(cache, config = {}) {
           'SELECT COUNT(*) as count FROM memory_patterns WHERE user_id = ?'
         ).get(userId);
         
-        // v2.0.2: Count facts with embeddings
         const embeddingStats = conn.prepare(`
           SELECT 
             COUNT(f.id) as total_facts,
@@ -885,9 +1225,18 @@ export function createMemory(cache, config = {}) {
           WHERE f.user_id = ?
         `).get(userId);
         
+        // v2.1.0: Summary stats
+        let summaryStats = { count: 0 };
+        try {
+          summaryStats = conn.prepare(
+            'SELECT COUNT(*) as count FROM memory_summaries WHERE user_id = ?'
+          ).get(userId);
+        } catch (e) {}
+        
         const stats = {
           facts: {},
           patterns: patternCount.count,
+          summaries: summaryStats.count,
           totalFacts: embeddingStats.total_facts,
           factsWithEmbeddings: embeddingStats.facts_with_embeddings,
           embeddingCoverage: embeddingStats.total_facts > 0 
@@ -904,18 +1253,12 @@ export function createMemory(cache, config = {}) {
         return stats;
       } catch (err) {
         if (debug) console.error('[memory] stats error:', err);
-        return { facts: {}, patterns: 0, totalFacts: 0, factsWithEmbeddings: 0, embeddingCoverage: 0 };
+        return { facts: {}, patterns: 0, summaries: 0, totalFacts: 0, factsWithEmbeddings: 0, embeddingCoverage: 0 };
       }
     },
     
     /**
      * Bulk store facts with embeddings (for batch extraction)
-     * 
-     * v2.0.2: New method for efficient batch storage with embeddings
-     * 
-     * @param {Array<Object>} facts - Array of fact objects with optional embeddings
-     * @param {Object} context - Common context (userId, agentId, sessionId, scope)
-     * @returns {Promise<{stored: number, updated: number, errors: number}>}
      */
     async bulkStoreFacts(facts, context) {
       const { userId, agentId, sessionId, scope = 'user' } = context;

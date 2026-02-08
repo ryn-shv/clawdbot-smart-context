@@ -1,59 +1,106 @@
-# Exclude all markdown files except public-facing ones
+# Development and internal documentation
 *.md
 !README.md
-!PLUGIN_DISTRIBUTION_GUIDE.md
-!LICENSE.md
-
-# Development files
-__tests__/
-*.sh
-test-*.js
-verify-*.js
-backups/
-*.backup
-*.bak
-
-# Phase documentation (internal)
-PHASE*.md
-IMPLEMENTATION_STATUS.md
-MIGRATION_COMPLETE.md
-EMBEDDER_*.md
-TOOL_RESULTS_ARCHITECTURE.md
-AUDIT-REPORT-*.md
-CONFIG_FIX_REPORT.md
-FIX-SUMMARY.md
-LOGGING_ARCHITECTURE.md
-CURRENT_TASK.md
-DIAGNOSIS.md
-STATUS.md
-VERIFICATION.md
-BUGFIX-*.md
-COMPLETION_CHECKLIST.md
-INTEGRATION_GUIDE.md
-NEURAL_SETUP.md
-PACKAGING-PLAN.md
-PRODUCTION_STATUS_*.md
-TRANSFORMERS_MIGRATION_README.md
+!CHANGELOG.md
+!INSTALLATION.md
+!CONFIGURATION.md
+!QUICKSTART.md
+!LICENSE
 
 # Git files
 .git/
 .gitignore
+.gitattributes
 
-# Development artifacts
-*.backup-*
-*.backup
-*.current-backup
-*.enhanced
-*_final.js
-*_v3.js
-*.accuracy-backup.js
+# Development files
+.backup/
+*.backup*
+*.bak
+*.old
+
+# Internal documentation (not needed by users)
+PHASE*.md
+IMPLEMENTATION_STATUS.md
+HYBRID-MEMORY-DESIGN.md
+COMPLETION_*.md
+*_SUMMARY.md
+*_REPORT.md
+*_GUIDE.md
+*_ARCHITECTURE.md
+AUDIT-REPORT-*.md
+CONFIG_FIX_REPORT.md
+FIX-SUMMARY.md
+BUGFIX-*.md
+NEURAL_SETUP.md
+PRODUCTION_STATUS_*.md
+TRANSFORMERS_MIGRATION_README.md
+TOOL_RESULTS_ARCHITECTURE.md
+STATUS.md
+DIAGNOSIS.md
+VERIFICATION.md
+CURRENT_TASK.md
+PLUGIN_DISTRIBUTION_GUIDE.md
+LOGGING_ARCHITECTURE.md
+EMBEDDER_*.md
+MIGRATION_COMPLETE.md
+NEURAL_SETUP.md
+FIX_APPLIED.md
+
+# Test infrastructure
+tests/
+benchmarks/
+__tests__/
+coverage/
+
+# Manual test scripts (keep test-memory.js)
+manual-*.js
+benchmark-*.js
+verify-*.js
+integrate-*.py
+test-config-*.js
+test-e2e-*.js
+test-embedder-*.js
+test-gemini-*.js
+test-optimizations.js
+test-plugin.js
+
+# Build artifacts
+dist/
+*.tgz
+
+# Cache and databases
+cache/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.*
+.env.optimized
+
+# Temporary files
+*.tmp
+*.temp
+*-patch.js
+*-insert.txt
 *.phase*-backup
-*.phase*-only
-*.pre-phase*-backup
 config.js.new
-config.js.phase*
-multiquery-insert.txt
-test-kind.cjs
-memory-selector-patch.js
-patch-*.js
-selector-thread-patch.js
+add-*.js
+fix-*.patch
+enable-*.sh
+post-update-check.sh
+
+# Keep memory-selector-patch.js but exclude other patches
+selector-*.js
+!selector.js

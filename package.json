@@ -1,7 +1,7 @@
 {
   "name": "clawdbot-smart-context",
-  "version": "2.0.5",
-  "description": "Semantic context selection for Clawdbot - filters message history by relevance (Transformers.js + WebGPU)",
+  "version": "2.1.1",
+  "description": "Semantic context selection for Clawdbot - filters message history by relevance with hybrid memory (facts + summaries)",
   "keywords": [
     "clawdbot",
     "context",
@@ -10,10 +10,29 @@
     "transformers",
     "ai-agent",
     "llm",
-    "memory"
+    "memory",
+    "hybrid-memory",
+    "rag",
+    "vector-search"
   ],
   "main": "index.js",
   "type": "module",
+  "bin": {
+    "smart-context-health": "./scripts/health-check.sh",
+    "smart-context-patches": "./scripts/apply-patches.sh"
+  },
+  "files": [
+    "*.js",
+    "!*.test.js",
+    "!*.backup*",
+    "hooks/",
+    "tool-results/",
+    "scripts/",
+    "README.md",
+    "CHANGELOG.md",
+    "INSTALLATION.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ryn-shv/clawdbot-smart-context.git"
@@ -26,8 +45,8 @@
     "id": "smart-context",
     "name": "Smart Context",
     "kind": "hook",
-    "description": "Filters message history by semantic relevance before LLM calls",
-    "version": "2.0.0",
+    "description": "Filters message history by semantic relevance with hybrid memory extraction",
+    "version": "2.1.1",
     "configSchema": {
       "type": "object",
       "properties": {
@@ -60,19 +79,57 @@
         "stripOldToolCalls": {
           "type": "boolean",
           "default": false,
-          "description": "Remove old tool calls to avoid provider format issues (default: false for safety)"
+          "description": "Remove old tool calls to avoid provider format issues"
         },
         "cachePath": {
           "type": "string",
-          "description": "SQLite database path for embedding cache"
+          "description": "SQLite database path for embedding cache",
+          "default": "~/.clawdbot/smart-context-cache.db"
         },
         "debug": {
           "type": "boolean",
           "default": false,
           "description": "Enable debug logging"
+        },
+        "SC_STORAGE_MODE": {
+          "type": "string",
+          "enum": ["facts", "semantic", "hybrid"],
+          "default": "hybrid",
+          "description": "Memory storage mode: facts only, summaries only, or both"
+        },
+        "SC_SUMMARY_DEDUP_THRESHOLD": {
+          "type": "number",
+          "default": 0.85,
+          "minimum": 0.5,
+          "maximum": 1.0,
+          "description": "Cosine similarity threshold for summary deduplication"
+        },
+        "SC_SUMMARY_MAX_LENGTH": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 100,
+          "maximum": 2000,
+          "description": "Maximum character length for summary content"
+        },
+        "SC_SUMMARY_LIMIT": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Maximum summaries per user before LRU eviction"
+        },
+        "SC_MEMORY": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable memory system (fact and summary storage)"
+        },
+        "SC_MEMORY_EXTRACT": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable automatic memory extraction from conversations"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     }
   },
   "dependencies": {
@@ -82,10 +139,31 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "author": "rynshv",
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "author": {
+    "name": "rynshv",
+    "url": "https://github.com/ryn-shv"
+  },
   "license": "MIT",
   "scripts": {
     "test": "node test-memory.js",
-    "test:memory": "node test-memory.js"
+    "test:memory": "node test-memory.js",
+    "postinstall": "node scripts/postinstall.js || true",
+    "apply-patches": "bash scripts/apply-patches.sh",
+    "check-patches": "bash scripts/check-patches.sh",
+    "revert-patches": "bash scripts/revert-patches.sh",
+    "health-check": "bash scripts/health-check.sh"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/ryn-shv"
   }
 }

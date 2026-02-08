@@ -1,0 +1,17 @@
+--- a/dist/plugins/hooks.js
++++ b/dist/plugins/hooks.js
+@@ -85,11 +85,13 @@ export function createHookRunner(registry, options = {}) {
+     /**
+      * Run before_agent_start hook.
+      * Allows plugins to inject context into the system prompt.
+-     * Runs sequentially, merging systemPrompt and prependContext from all handlers.
++     * Runs sequentially, merging systemPrompt, prependContext, and messages from all handlers.
++     * PATCHED: Added messages support for smart-context plugin.
+      */
+     async function runBeforeAgentStart(event, ctx) {
+         return runModifyingHook("before_agent_start", event, ctx, (acc, next) => ({
+             systemPrompt: next.systemPrompt ?? acc?.systemPrompt,
++            messages: next.messages ?? acc?.messages,
+             prependContext: acc?.prependContext && next.prependContext
+                 ? `${acc.prependContext}\n\n${next.prependContext}`
+                 : (next.prependContext ?? acc?.prependContext),

@@ -9,6 +9,8 @@
  * - Hybrid keyword + semantic search
  * - Cross-result search capabilities
  * 
+ * v2.1.0: Unified memory search across facts + summaries
+ * 
  * @module tool-results/retriever
  */
 
@@ -157,9 +159,6 @@ export function createRetriever(config = {}) {
     /**
      * PHASE 2: Search across all tool results semantically
      * 
-     * Queries tool_result_chunks by embedding similarity.
-     * Returns relevant chunks from past tool results.
-     * 
      * @param {Object} params - Search parameters
      * @param {string} params.query - Natural language query
      * @param {string} [params.toolFilter] - Filter by tool name
@@ -212,10 +211,6 @@ export function createRetriever(config = {}) {
         let filteredChunks = allChunks;
         
         if (toolFilter || sessionFilter) {
-          // Need to fetch result metadata for filtering
-          const db = store.getDb();
-          if (!db) return [];
-          
           const resultIds = new Set(allChunks.map(c => c.resultId));
           const resultMetadata = new Map();
           
@@ -288,6 +283,121 @@ export function createRetriever(config = {}) {
         if (debug) console.error(err.stack);
         return [];
       }
+    },
+    
+    /**
+     * v2.1.0: Unified memory search across facts AND summaries
+     * 
+     * Searches both memory_facts and memory_summaries tables,
+     * returns combined results with source tagging.
+     * 
+     * @param {Object} params - Search parameters
+     * @param {string} params.query - Natural language query
+     * @param {string} params.userId - User ID
+     * @param {Object} memoryAPI - Memory API instance
+     * @param {Object} [params.options] - Search options
+     * @param {number} [params.options.topK=10] - Max results total
+     * @param {number} [params.options.factTopK=7] - Max fact results
+     * @param {number} [params.options.summaryTopK=5] - Max summary results
+     * @param {number} [params.options.minScore=0.3] - Min relevance score
+     * @param {string[]} [params.options.projects] - Filter by project slugs
+     * @returns {Promise<Array>} Combined, ranked results with source tags
+     */
+    async searchMemory(params) {
+      const { query, userId, options = {} } = params;
+      const memoryAPI = params.memoryAPI;
+      
+      const {
+        topK = 10,
+        factTopK = 7,
+        summaryTopK = 5,
+        minScore = 0.3,
+        projects
+      } = options;
+      
+      if (!memoryAPI) {
+        if (debug) console.log('[retriever] Memory API not available');
+        return [];
+      }
+      
+      if (!query || !userId) {
+        return [];
+      }
+      
+      const results = [];
+      
+      // Search facts
+      try {
+        const facts = await memoryAPI.retrieveFacts({
+          userId,
+          query,
+          options: {
+            topK: factTopK,
+            minScore,
+            scopes: ['user', 'agent']
+          }
+        });
+        
+        for (const fact of facts) {
+          results.push({
+            source: 'fact',
+            id: fact.id,
+            content: fact.value,
+            category: fact.category,
+            score: fact.score,
+            cosineScore: fact.cosineScore,
+            bm25Score: fact.bm25Score,
+            createdAt: fact.createdAt,
+            updatedAt: fact.updatedAt,
+            metadata: fact.metadata
+          });
+        }
+      } catch (err) {
+        if (debug) console.error('[retriever] Fact search error:', err.message);
+      }
+      
+      // Search summaries
+      try {
+        const summaries = await memoryAPI.retrieveSummaries({
+          userId,
+          query,
+          options: {
+            topK: summaryTopK,
+            minScore,
+            projects
+          }
+        });
+        
+        for (const summary of summaries) {
+          results.push({
+            source: 'summary',
+            id: summary.id,
+            topic: summary.topic,
+            content: summary.content,
+            entities: summary.entities,
+            projects: summary.projects,
+            score: summary.score,
+            cosineScore: summary.cosineScore,
+            bm25Score: summary.bm25Score,
+            sourceMessages: summary.sourceMessages,
+            createdAt: summary.createdAt,
+            updatedAt: summary.updatedAt
+          });
+        }
+      } catch (err) {
+        if (debug) console.error('[retriever] Summary search error:', err.message);
+      }
+      
+      // Sort all results by score and take topK
+      results.sort((a, b) => b.score - a.score);
+      
+      if (debug) {
+        const factCount = results.filter(r => r.source === 'fact').length;
+        const summaryCount = results.filter(r => r.source === 'summary').length;
+        console.log(`[retriever] Memory search: ${factCount} facts + ${summaryCount} summaries for "${query.slice(0, 50)}"`);
+      }
+      
+      return results.slice(0, topK);
     },
     
     /**
@@ -435,4 +545,44 @@ export function formatRAGContext(chunks) {
   return output;
 }
 
-export default { createRetriever, formatRAGContext };
+/**
+ * v2.1.0: Format unified memory results for context injection
+ * 
+ * @param {Array} results - Memory search results (facts + summaries)
+ * @returns {string} Formatted context string
+ */
+export function formatMemoryContext(results) {
+  if (!results || results.length === 0) return '';
+  
+  const facts = results.filter(r => r.source === 'fact');
+  const summaries = results.filter(r => r.source === 'summary');
+  
+  let output = '';
+  
+  if (facts.length > 0) {
+    output += '🧠 REMEMBERED FACTS:\n';
+    for (const fact of facts) {
+      const score = Math.round((fact.score || 0) * 100);
+      output += `  • [${fact.category || 'general'}] ${fact.content} (${score}%)\n`;
+    }
+    output += '\n';
+  }
+  
+  if (summaries.length > 0) {
+    output += '📝 CONVERSATION SUMMARIES:\n';
+    for (const summary of summaries) {
+      const score = Math.round((summary.score || 0) * 100);
+      output += `  ┌─ ${summary.topic} (${score}%)\n`;
+      output += `  │  ${summary.content}\n`;
+      if (summary.entities && summary.entities.length > 0) {
+        output += `  │  Entities: ${summary.entities.join(', ')}\n`;
+      }
+      output += `  └──\n`;
+    }
+    output += '\n';
+  }
+  
+  return output;
+}
+
+export default { createRetriever, formatRAGContext, formatMemoryContext };
