@@ -440,7 +440,7 @@ async function handleBeforeAgentStart(event, ctx, config, api) {
 }
 
 /**
- * after_agent_end hook handler (Phase 4B: Extraction)
+ * agent_end hook handler (Phase 4B: Extraction)
  */
 async function handleAfterAgentEnd(event, ctx, config, api) {
   sessionStats.hookCalls.afterAgentEnd++;
@@ -452,7 +452,7 @@ async function handleAfterAgentEnd(event, ctx, config, api) {
   
   const sessionId = ctx?.sessionId || ctx?.session?.id || 'unknown';
   
-  const op = logger.startOp('after_agent_end', {
+  const op = logger.startOp('agent_end', {
     sessionId,
     hasResponse: !!event.response
   });
@@ -621,9 +621,9 @@ export function register(api) {
   
   logger.info('Registered hook: before_agent_start');
 
-  // Register after_agent_end hook (Phase 4B: Extraction)
+  // Register agent_end hook (Phase 4B: Extraction)
   if (FEATURE_FLAGS.memory && FEATURE_FLAGS.memoryExtract) {
-    api.on('after_agent_end', async (event, ctx) => {
+    api.on('agent_end', async (event, ctx) => {
       return handleAfterAgentEnd(event, ctx, config, api);
     }, {
       name: 'smart-context-extractor',
@@ -631,7 +631,7 @@ export function register(api) {
       priority: 50
     });
     
-    logger.info('Registered hook: after_agent_end (extraction enabled)');
+    logger.info('Registered hook: agent_end (extraction enabled)');
   }
 
   // Register tool_result hook
@@ -660,7 +660,7 @@ export function register(api) {
 
   const hooks = ['before_agent_start', 'tool_result'];
   if (FEATURE_FLAGS.memory && FEATURE_FLAGS.memoryExtract) {
-    hooks.push('after_agent_end');
+    hooks.push('agent_end');
   }
 
   logger.info('✅ Smart-context hooks registered', {
